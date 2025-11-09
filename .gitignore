@@ -1,14 +1,3 @@
-# Datenbanken ignorieren
-data/cards.json
-data/cards_512D_with_Set.json
-data/cards_2048D_with_Set.json
-data/cards_2048D_ohne_Set.json
-# Große Daten- und Exportdateien ignorieren
-data/cards.json
-data/cards_512D_with_Set.json
-data/cards_2048D_with_Set.json
-data/cards_2048D_ohne_Set.json
-tools/visualization/projector_vectors.tsv
 # Ignore all image files everywhere
 *.jpg
 *.jpeg
