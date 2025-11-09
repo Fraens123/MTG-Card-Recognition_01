@@ -57,7 +57,6 @@ def get_transforms(resize_hw: Tuple[int, int]) -> Tuple[T.Compose, T.Compose]:
     """
     train_transform = T.Compose([
         T.Resize(resize_hw, antialias=True),
-        T.RandomHorizontalFlip(),
         T.ToTensor(),
         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
