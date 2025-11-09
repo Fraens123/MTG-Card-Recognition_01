@@ -1,0 +1,117 @@
+# Datenbanken ignorieren
+data/cards.json
+data/cards_512D_with_Set.json
+data/cards_2048D_with_Set.json
+data/cards_2048D_ohne_Set.json
+# Große Daten- und Exportdateien ignorieren
+data/cards.json
+data/cards_512D_with_Set.json
+data/cards_2048D_with_Set.json
+data/cards_2048D_ohne_Set.json
+tools/visualization/projector_vectors.tsv
+# Ignore all image files everywhere
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.gif
+*.tiff
+*.webp
+
+# Ignore all folders that may contain images
+data/scryfall_images/
+data/scryfall_augmented/
+data/camera_images/
+data/*/
+debug/
+output_matches/
+tools/visualization/exports/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+venv_*/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# Configuration files (enthalten sensible Daten)
+config.yaml
+.env
+
+# Data directories (too large for git)
+data/scryfall_images/
+data/scryfall_augmented/
+data/camera_images/
+data/*/
+debug/augment_preview/
+debug/feature_maps/
+output_matches/
+tools/visualization/exports/
+
+# Model weights (too large for git)
+models/*.pt
+models/*.pth
+models/*.ckpt
+models/*/
+
+# Output/Runtime files
+output_matches/
+output_matches/*
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Large files that should use Git LFS or external storage
+*.zip
+*.tar.gz
+*.rar
+*.7z
