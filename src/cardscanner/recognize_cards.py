@@ -31,12 +31,17 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 try:
     from .model import load_encoder
     from .db import SimpleCardDB
-    from .dataset import parse_scryfall_filename, crop_set_symbol
+    from .dataset import parse_scryfall_filename
 except ImportError:
     # Fallback für direkten Aufruf
     from src.cardscanner.model import load_encoder
     from src.cardscanner.db import SimpleCardDB
-    from src.cardscanner.dataset import parse_scryfall_filename, crop_set_symbol
+    from src.cardscanner.dataset import parse_scryfall_filename
+
+try:
+    from .crop_utils import crop_set_symbol
+except ImportError:
+    from src.cardscanner.crop_utils import crop_set_symbol
 
 
 def load_config(config_path: str = "config.yaml") -> dict:

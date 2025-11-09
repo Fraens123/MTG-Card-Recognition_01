@@ -1,45 +1,3 @@
-from PIL import Image
-from typing import Optional
-# NEU: Set-Symbol-Crop-Funktion
-def crop_set_symbol(img: Image.Image, crop_cfg: Optional[dict] = None) -> Image.Image:
-    """
-    Schneidet das Set-Symbol aus dem Bild.
-    crop_cfg: dict mit Schlüsseln x_min, y_min, x_max, y_max (relativ 0..1).
-    Wenn crop_cfg None ist, wird config.yaml geladen.
-    """
-    if crop_cfg is None:
-        # Lazy load aus config.yaml
-        try:
-            with open("config.yaml", "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f)
-            crop_cfg = config.get("debug", {}).get("set_symbol_crop", None)
-        except Exception as e:
-            print(f"[WARN] crop_set_symbol: kann config.yaml nicht laden: {e}")
-            crop_cfg = None
-
-    if not crop_cfg:
-        # Fallback: gib Original zurück, damit nichts crasht
-        return img
-
-    x_min = float(crop_cfg.get("x_min", 0.7))
-    y_min = float(crop_cfg.get("y_min", 0.3))
-    x_max = float(crop_cfg.get("x_max", 0.95))
-    y_max = float(crop_cfg.get("y_max", 0.6))
-
-    w, h = img.size
-    left   = int(x_min * w)
-    top    = int(y_min * h)
-    right  = int(x_max * w)
-    bottom = int(y_max * h)
-
-    # Grenzen clampen
-    left   = max(0, min(left, w - 1))
-    right  = max(left + 1, min(right, w))
-    top    = max(0, min(top, h - 1))
-    bottom = max(top + 1, min(bottom, h))
-
-    return img.crop((left, top, right, bottom))
-
 from collections import OrderedDict
 
 # Picklebare LRUCache-Klasse für Bild-Caching
@@ -59,6 +17,7 @@ class LRUCache(OrderedDict):
 
 import yaml
 from src.cardscanner.augment_cards import CameraLikeAugmentor
+from src.cardscanner.crop_utils import crop_set_symbol, load_symbol_crop_cfg
 import os
 import random
 from typing import Dict, List, Tuple, Optional
@@ -112,6 +71,9 @@ class TripletImageDataset(Dataset):
         augmentor_params: dict = None,
         cache_images: bool = True,
         cache_max_size: int = 1000,
+        precomputed_dir: Optional[str] = None,
+        anchor_from_original: bool = True,
+        slots_per_card: int = 1,
     ) -> None:
         """
         Dataset für MTG-Karten Triplet Training.
@@ -123,15 +85,12 @@ class TripletImageDataset(Dataset):
         self.transform_anchor = transform_anchor
         self.transform_posneg = transform_posneg
         self.use_camera_augmentor = use_camera_augmentor
+        self.precomputed_dir = precomputed_dir
+        self.anchor_from_original = anchor_from_original
+        self.slots_per_card = max(1, int(slots_per_card))
 
-        # NEU: Set-Symbol-Crop-Konfiguration aus config.yaml
-        try:
-            with open("config.yaml", "r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f)
-            self.set_symbol_crop_cfg = cfg.get("debug", {}).get("set_symbol_crop", None)
-        except Exception as e:
-            print(f"[WARN] TripletImageDataset: config.yaml nicht lesbar: {e}")
-            self.set_symbol_crop_cfg = None
+        # Set-Symbol-Konfiguration zentral laden
+        self.set_symbol_crop_cfg = load_symbol_crop_cfg()
         if self.use_camera_augmentor:
             if augmentor_params is None:
                 # Lade Parameter aus config.yaml
@@ -152,6 +111,8 @@ class TripletImageDataset(Dataset):
                 background_color=augmentor_params.get("background_color", "white"),
             )
         self.card_to_paths = {}
+        self.card_to_precomputed: Dict[str, List[Tuple[str, Optional[str]]]] = {}
+        self.samples: List[str] = []
         if cache_images:
             self._image_cache = LRUCache(cache_max_size)
         else:
@@ -210,6 +171,104 @@ class TripletImageDataset(Dataset):
             print(f"  - Karte {card_id}: {len(self.card_to_paths[card_id])} Bilder")
         if len(self.card_ids) > 3:
             print("  - ...")
+
+        if self.precomputed_dir:
+            self._load_precomputed_variants(self.precomputed_dir)
+
+        self.sample_card_ids = [cid for cid in self.card_ids if self.card_to_paths.get(cid)]
+        if not self.sample_card_ids:
+            raise ValueError("TripletImageDataset: Keine gültigen Karten gefunden.")
+        self.samples = [
+            card_id
+            for card_id in self.sample_card_ids
+            for _ in range(self.slots_per_card)
+        ]
+
+    def _load_precomputed_variants(self, root_dir: str) -> None:
+        if not os.path.isdir(root_dir):
+            print(f"[INFO] Vorab-Augmentierungen: Verzeichnis nicht gefunden ({root_dir})")
+            return
+        total_variants = 0
+        for current_root, dirs, _ in os.walk(root_dir):
+            if "full" not in dirs:
+                continue
+            # Verhindere, dass os.walk in full/symbol weiter absteigt
+            dirs[:] = [d for d in dirs if d not in ("full", "symbol")]
+            card_dir = current_root
+            card_uuid = os.path.basename(card_dir)
+            full_dir = os.path.join(card_dir, "full")
+            symbol_dir = os.path.join(card_dir, "symbol")
+            variants: List[Tuple[str, Optional[str]]] = []
+            for fname in sorted(os.listdir(full_dir)):
+                if not fname.lower().endswith((".jpg", ".jpeg", ".png")):
+                    continue
+                full_path = os.path.join(full_dir, fname)
+                symbol_path = None
+                if os.path.isdir(symbol_dir):
+                    candidate = os.path.join(symbol_dir, fname)
+                    if os.path.exists(candidate):
+                        symbol_path = candidate
+                variants.append((full_path, symbol_path))
+            if variants:
+                self.card_to_precomputed[card_uuid] = variants
+                total_variants += len(variants)
+        print(
+            f"[INFO] Vorab-Augmentierungen geladen: {len(self.card_to_precomputed)} Karten, "
+            f"{total_variants} Varianten"
+        )
+
+    def _load_image(self, path: str) -> Image.Image:
+        if self.cache_images and self._image_cache is not None:
+            cached = self._image_cache.get(path)
+            if cached is not None:
+                return cached.copy()
+        img = Image.open(path).convert("RGB")
+        if self.cache_images and self._image_cache is not None:
+            self._image_cache[path] = img
+            return img.copy()
+        return img
+
+    def _load_precomputed_variant(self, card_id: str) -> Optional[Tuple[Image.Image, Image.Image]]:
+        variants = self.card_to_precomputed.get(card_id)
+        if not variants:
+            return None
+        full_path, symbol_path = random.choice(variants)
+        full_img = self._load_image(full_path)
+        if symbol_path:
+            crop_img = self._load_image(symbol_path)
+        else:
+            crop_img = crop_set_symbol(full_img, self.set_symbol_crop_cfg)
+        return full_img, crop_img
+
+    def _generate_augmented_from_original(self, card_id: str) -> Tuple[Image.Image, Image.Image]:
+        paths = self.card_to_paths.get(card_id)
+        if not paths:
+            raise ValueError(f"Keine Originalbilder für Karte {card_id} gefunden.")
+        base_img = self._load_image(random.choice(paths))
+        if self.use_camera_augmentor and hasattr(self, "camera_augmentor"):
+            aug_img = self.camera_augmentor.create_camera_like_augmentations(
+                base_img, num_augmentations=1
+            )[-1]
+        else:
+            aug_img = base_img.copy()
+        crop_img = crop_set_symbol(aug_img, self.set_symbol_crop_cfg)
+        return aug_img, crop_img
+
+    def _get_anchor_pair(self, card_id: str) -> Tuple[Image.Image, Image.Image]:
+        if self.anchor_from_original and self.card_to_paths.get(card_id):
+            anchor_img = self._load_image(random.choice(self.card_to_paths[card_id]))
+            anchor_crop = crop_set_symbol(anchor_img, self.set_symbol_crop_cfg)
+            return anchor_img, anchor_crop
+        variant = self._load_precomputed_variant(card_id)
+        if variant:
+            return variant
+        return self._generate_augmented_from_original(card_id)
+
+    def _get_augmented_pair(self, card_id: str) -> Tuple[Image.Image, Image.Image]:
+        variant = self._load_precomputed_variant(card_id)
+        if variant:
+            return variant
+        return self._generate_augmented_from_original(card_id)
     def save_augmentations_of_first_card(self, output_dir: str, n_aug: int = 20):
         """
         Erzeugt n_aug augmentierte Varianten der ersten Karte und speichert sie.
@@ -269,84 +328,44 @@ class TripletImageDataset(Dataset):
         print(f"Augmentierungen gespeichert in: {output_dir}")
 
     def __len__(self) -> int:
-        return max(1, len(self.all_paths))
+        return len(self.samples)
 
     def _sample_negative_uuid(self, positive_uuid: str) -> str:
-        # Schnelleres negatives Sampling
-        idx = self.card_to_idx[positive_uuid]
-        neg_idx = random.randint(0, len(self.card_ids) - 2)
-        if neg_idx >= idx:
-            neg_idx += 1
-        return self.card_ids[neg_idx]
+        neg_uuid = random.choice(self.sample_card_ids)
+        while neg_uuid == positive_uuid:
+            neg_uuid = random.choice(self.sample_card_ids)
+        return neg_uuid
 
     def __getitem__(self, idx: int):
-        pos_uuid = random.choice(self.card_ids)
-        pos_list = self.card_to_paths[pos_uuid]
-        a_path = random.choice(pos_list)
-        p_path = random.choice(pos_list)
-        # ensure p_path differs when possible
-        if len(pos_list) > 1:
-            while p_path == a_path:
-                p_path = random.choice(pos_list)
+        if not self.samples:
+            raise IndexError("TripletImageDataset besitzt keine Samples.")
+
+        pos_uuid = self.samples[idx % len(self.samples)]
         neg_uuid = self._sample_negative_uuid(pos_uuid)
-        n_path = random.choice(self.card_to_paths[neg_uuid])
 
-        # Nutze Bild-Caching (LRU) oder lade direkt
-        if self.cache_images:
-            a_img = self._image_cache.get(a_path)
-            if a_img is None:
-                a_img = Image.open(a_path).convert("RGB")
-                self._image_cache[a_path] = a_img
-            p_img = self._image_cache.get(p_path)
-            if p_img is None:
-                p_img = Image.open(p_path).convert("RGB")
-                self._image_cache[p_path] = p_img
-            n_img = self._image_cache.get(n_path)
-            if n_img is None:
-                n_img = Image.open(n_path).convert("RGB")
-                self._image_cache[n_path] = n_img
-        else:
-            a_img = Image.open(a_path).convert("RGB")
-            p_img = Image.open(p_path).convert("RGB")
-            n_img = Image.open(n_path).convert("RGB")
+        anchor_full_img, anchor_crop_img = self._get_anchor_pair(pos_uuid)
+        positive_full_img, positive_crop_img = self._get_augmented_pair(pos_uuid)
+        negative_full_img, negative_crop_img = self._get_augmented_pair(neg_uuid)
 
-        # OPTIONAL: Kamera-Augmentierung (wie bisher)
-        if self.use_camera_augmentor:
-            a_img = self.camera_augmentor.create_camera_like_augmentations(a_img, num_augmentations=1)[-1]
-            p_img = self.camera_augmentor.create_camera_like_augmentations(p_img, num_augmentations=1)[-1]
-            n_img = self.camera_augmentor.create_camera_like_augmentations(n_img, num_augmentations=1)[-1]
-
-        # NEU: Set-Symbol-Crops aus den augmentierten Bildern schneiden
-        a_crop_img = crop_set_symbol(a_img, self.set_symbol_crop_cfg)
-        p_crop_img = crop_set_symbol(p_img, self.set_symbol_crop_cfg)
-        n_crop_img = crop_set_symbol(n_img, self.set_symbol_crop_cfg)
-
-        # Vollbilder transformieren
         if self.transform_anchor:
-            a_full_t = self.transform_anchor(a_img)
+            a_full_t = self.transform_anchor(anchor_full_img)
         else:
-            a_full_t = T.ToTensor()(a_img)
+            a_full_t = T.ToTensor()(anchor_full_img)
 
         if self.transform_posneg:
-            p_full_t = self.transform_posneg(p_img)
-            n_full_t = self.transform_posneg(n_img)
+            p_full_t = self.transform_posneg(positive_full_img)
+            n_full_t = self.transform_posneg(negative_full_img)
+            a_crop_t = self.transform_posneg(anchor_crop_img)
+            p_crop_t = self.transform_posneg(positive_crop_img)
+            n_crop_t = self.transform_posneg(negative_crop_img)
         else:
-            p_full_t = T.ToTensor()(p_img)
-            n_full_t = T.ToTensor()(n_img)
-
-        # NEU: Crops transformieren
-        if self.transform_posneg:
-            a_crop_t = self.transform_posneg(a_crop_img)
-            p_crop_t = self.transform_posneg(p_crop_img)
-            n_crop_t = self.transform_posneg(n_crop_img)
-        else:
-            a_crop_t = T.ToTensor()(a_crop_img)
-            p_crop_t = T.ToTensor()(p_crop_img)
-            n_crop_t = T.ToTensor()(n_crop_img)
+            p_full_t = T.ToTensor()(positive_full_img)
+            n_full_t = T.ToTensor()(negative_full_img)
+            a_crop_t = T.ToTensor()(anchor_crop_img)
+            p_crop_t = T.ToTensor()(positive_crop_img)
+            n_crop_t = T.ToTensor()(negative_crop_img)
 
         label = self.card_to_idx[pos_uuid]
-
-        # NEU: Vollbild + Crop pro Anchor/Pos/Neg zurückgeben
         return a_full_t, a_crop_t, p_full_t, p_crop_t, n_full_t, n_crop_t, label
 
     @property

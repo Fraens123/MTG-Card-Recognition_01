@@ -9,9 +9,49 @@ import random
 import argparse
 import yaml
 from pathlib import Path
+import sys
+import shutil
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 import numpy as np
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
+from tqdm import tqdm
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.append(str(REPO_ROOT))
+
+try:
+    from .crop_utils import crop_set_symbol, load_symbol_crop_cfg
+except ImportError:
+    from src.cardscanner.crop_utils import crop_set_symbol, load_symbol_crop_cfg
+
+
+def parse_scryfall_filename(filename: str) -> Optional[Tuple[str, str, str, str]]:
+    """
+    Parst Scryfall-Dateinamen und liefert (card_uuid, set_code, collector_number, card_name).
+    """
+    name, _ = os.path.splitext(os.path.basename(filename))
+
+    parts = name.split("_")
+    if len(parts) >= 4:
+        set_code = parts[0]
+        collector_number = parts[1]
+        card_uuid = parts[-1]
+        card_name = "_".join(parts[2:-1])
+        return card_uuid, set_code, collector_number, card_name
+
+    if "-" in name:
+        parts = name.split("-", 2)
+        if len(parts) == 3:
+            set_code = parts[0]
+            collector_number = parts[1]
+            card_name = parts[2]
+            card_uuid = f"{set_code}_{collector_number}_{hash(name) % 100000:05d}"
+            return card_uuid, set_code, collector_number, card_name
+
+    print(f"[WARN] parse_scryfall_filename: Unbekanntes Format für '{filename}'")
+    return None
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -250,141 +290,252 @@ def main():
     # Konfiguration laden
     config = load_config()
     aug_config = config.get('augmentation', {})
+    data_cfg = config.get('data', {})
     
-    parser = argparse.ArgumentParser(description='Augmentierung von MTG-Karten für Camera-ähnliche Bedingungen')
-    parser.add_argument('--input_dir', '-i', type=str, default='./data/scryfall_images',
-                        help='Verzeichnis mit Scryfall-Bildern')
-    parser.add_argument('--output_dir', '-o', type=str, default='./data/scryfall_augmented',
-                        help='Ausgabeverzeichnis für augmentierte Bilder')
-    parser.add_argument('--num_augmentations', '-n', type=int, 
-                        default=aug_config.get('num_augmentations', 8),
-                        help='Anzahl Augmentierungen pro Bild')
-    
+    parser = argparse.ArgumentParser(description="Augmentierung von MTG-Karten für Camera-ähnliche Bedingungen")
+    parser.add_argument(
+        "--input_dir",
+        "-i",
+        type=str,
+        default=data_cfg.get("scryfall_images", "./data/scryfall_images"),
+        help="Verzeichnis mit Scryfall-Bildern",
+    )
+    parser.add_argument(
+        "--output_dir",
+        "-o",
+        type=str,
+        default=data_cfg.get("precomputed_augmented", "./data/precomputed_augmented"),
+        help="Zielverzeichnis für vorberechnete Augmentierungen",
+    )
+    parser.add_argument(
+        "--num_augmentations",
+        "-n",
+        type=int,
+        default=aug_config.get("precompute_variants", aug_config.get("num_augmentations", 8)),
+        help="Anzahl Kamera-Augmentierungen pro Karte",
+    )
+    parser.add_argument(
+        "--jpg_quality",
+        type=int,
+        default=90,
+        help="JPEG-Qualität (1-100) für gespeicherte Varianten",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Existierende Kartenordner im Output löschen und neu erzeugen",
+    )
+
+    default_symbol = aug_config.get("save_symbol_crops", True)
+    parser.add_argument(
+        "--save-symbol-crops",
+        dest="save_symbol_crops",
+        action="store_true",
+        default=default_symbol,
+        help="Set-Symbol-Crops zusätzlich speichern (Standard aus config)",
+    )
+    parser.add_argument(
+        "--no-symbol-crops",
+        dest="save_symbol_crops",
+        action="store_false",
+        help="Nur Vollbilder sichern, keine Symbol-Crops",
+    )
+
     # Camera-Parameter mit Defaults aus Konfiguration
-    parser.add_argument('--brightness_min', type=float, 
-                        default=aug_config.get('brightness_min', 0.6),
-                        help='Minimaler Helligkeitsfaktor (Belichtung)')
-    parser.add_argument('--brightness_max', type=float, 
-                        default=aug_config.get('brightness_max', 1.4),
-                        help='Maximaler Helligkeitsfaktor (Belichtung)')
-    parser.add_argument('--contrast_min', type=float, 
-                        default=aug_config.get('contrast_min', 0.7),
-                        help='Minimaler Kontrastfaktor')
-    parser.add_argument('--contrast_max', type=float, 
-                        default=aug_config.get('contrast_max', 1.3),
-                        help='Maximaler Kontrastfaktor')
-    parser.add_argument('--blur_max', type=float, 
-                        default=aug_config.get('blur_max', 2.0),
-                        help='Maximaler Blur-Radius (Bewegungsunschärfe)')
-    parser.add_argument('--noise_max', type=float, 
-                        default=aug_config.get('noise_max', 20.0),
-                        help='Maximales Sensor-Rauschen')
-    parser.add_argument('--rotation_max', type=float, 
-                        default=aug_config.get('rotation_max', 8.0),
-                        help='Maximale Rotation in Grad')
-    parser.add_argument('--perspective', type=float, 
-                        default=aug_config.get('perspective', 0.05),
-                        help='Perspektivische Verzerrung (0.0-0.2)')
-    parser.add_argument('--shadow', type=float, 
-                        default=aug_config.get('shadow', 0.3),
-                        help='Schatten-Intensität (0.0-1.0)')
-    parser.add_argument('--saturation_min', type=float, 
-                        default=aug_config.get('saturation_min', 0.6),
-                        help='Minimaler Sättigungsfaktor')
-    parser.add_argument('--saturation_max', type=float, 
-                        default=aug_config.get('saturation_max', 1.2),
-                        help='Maximaler Sättigungsfaktor')
-    parser.add_argument('--color_temperature_min', type=float, 
-                        default=aug_config.get('color_temperature_min', 0.8),
-                        help='Minimaler Farbtemperatur-Faktor (kühler)')
-    parser.add_argument('--color_temperature_max', type=float, 
-                        default=aug_config.get('color_temperature_max', 1.2),
-                        help='Maximaler Farbtemperatur-Faktor (wärmer)')
-    parser.add_argument('--hue_shift_max', type=float, 
-                        default=aug_config.get('hue_shift_max', 10.0),
-                        help='Maximale Farbton-Verschiebung in Grad')
-    parser.add_argument('--background_color', type=str, 
-                        default=aug_config.get('background_color', 'white'),
-                        help='Hintergrundfarbe: white oder black')
-    
+    parser.add_argument(
+        "--brightness_min",
+        type=float,
+        default=aug_config.get("brightness_min", 0.6),
+        help="Minimaler Helligkeitsfaktor (Belichtung)",
+    )
+    parser.add_argument(
+        "--brightness_max",
+        type=float,
+        default=aug_config.get("brightness_max", 1.4),
+        help="Maximaler Helligkeitsfaktor (Belichtung)",
+    )
+    parser.add_argument(
+        "--contrast_min",
+        type=float,
+        default=aug_config.get("contrast_min", 0.7),
+        help="Minimaler Kontrastfaktor",
+    )
+    parser.add_argument(
+        "--contrast_max",
+        type=float,
+        default=aug_config.get("contrast_max", 1.3),
+        help="Maximaler Kontrastfaktor",
+    )
+    parser.add_argument(
+        "--blur_max",
+        type=float,
+        default=aug_config.get("blur_max", 2.0),
+        help="Maximaler Blur-Radius (Bewegungsunschärfe)",
+    )
+    parser.add_argument(
+        "--noise_max",
+        type=float,
+        default=aug_config.get("noise_max", 20.0),
+        help="Maximales Sensor-Rauschen",
+    )
+    parser.add_argument(
+        "--rotation_max",
+        type=float,
+        default=aug_config.get("rotation_max", 8.0),
+        help="Maximale Rotation in Grad",
+    )
+    parser.add_argument(
+        "--perspective",
+        type=float,
+        default=aug_config.get("perspective", 0.05),
+        help="Perspektivische Verzerrung (0.0-0.2)",
+    )
+    parser.add_argument(
+        "--shadow",
+        type=float,
+        default=aug_config.get("shadow", 0.3),
+        help="Schatten-Intensität (0.0-1.0)",
+    )
+    parser.add_argument(
+        "--saturation_min",
+        type=float,
+        default=aug_config.get("saturation_min", 0.6),
+        help="Minimaler Sättigungsfaktor",
+    )
+    parser.add_argument(
+        "--saturation_max",
+        type=float,
+        default=aug_config.get("saturation_max", 1.2),
+        help="Maximaler Sättigungsfaktor",
+    )
+    parser.add_argument(
+        "--color_temperature_min",
+        type=float,
+        default=aug_config.get("color_temperature_min", 0.8),
+        help="Minimaler Farbtemperatur-Faktor (kühler)",
+    )
+    parser.add_argument(
+        "--color_temperature_max",
+        type=float,
+        default=aug_config.get("color_temperature_max", 1.2),
+        help="Maximaler Farbtemperatur-Faktor (wärmer)",
+    )
+    parser.add_argument(
+        "--hue_shift_max",
+        type=float,
+        default=aug_config.get("hue_shift_max", 10.0),
+        help="Maximale Farbton-Verschiebung in Grad",
+    )
+    parser.add_argument(
+        "--background_color",
+        type=str,
+        default=aug_config.get("background_color", "white"),
+        help="Hintergrundfarbe: white oder black",
+    )
+
     args = parser.parse_args()
-    
-    # Camera-Parameter zusammenstellen
+    if args.num_augmentations < 1:
+        print("[INFO] num_augmentations < 1 -> setze auf 1")
+        args.num_augmentations = 1
+    args.jpg_quality = max(1, min(100, args.jpg_quality))
+
     camera_params = {
-        'brightness_range': (args.brightness_min, args.brightness_max),
-        'contrast_range': (args.contrast_min, args.contrast_max),
-        'saturation_range': (args.saturation_min, args.saturation_max),
-        'color_temperature_range': (args.color_temperature_min, args.color_temperature_max),
-        'hue_shift_max': args.hue_shift_max,
-        'blur_range': (0.0, args.blur_max),
-        'noise_range': (0, args.noise_max),
-        'rotation_range': (-args.rotation_max, args.rotation_max),
-        'perspective': args.perspective,
-        'shadow': args.shadow,
-        'background_color': args.background_color,
+        "brightness_range": (args.brightness_min, args.brightness_max),
+        "contrast_range": (args.contrast_min, args.contrast_max),
+        "saturation_range": (args.saturation_min, args.saturation_max),
+        "color_temperature_range": (args.color_temperature_min, args.color_temperature_max),
+        "hue_shift_max": args.hue_shift_max,
+        "blur_range": (0.0, args.blur_max),
+        "noise_range": (0, args.noise_max),
+        "rotation_range": (-args.rotation_max, args.rotation_max),
+        "perspective": args.perspective,
+        "shadow": args.shadow,
+        "background_color": args.background_color,
     }
-    
-    # Verzeichnisse einrichten
+
     input_path = Path(args.input_dir)
     output_path = Path(args.output_dir)
-    
+
     if not input_path.exists():
         print(f"❌ Input-Verzeichnis nicht gefunden: {input_path}")
         return
-    
+
     output_path.mkdir(parents=True, exist_ok=True)
-    
-    # Scryfall-Bilder finden
-    image_files = list(input_path.glob("*.jpg")) + list(input_path.glob("*.png"))
+
+    image_files = sorted(list(input_path.rglob("*.jpg")) + list(input_path.rglob("*.png")))
     if not image_files:
         print(f"❌ Keine Bilddateien gefunden in: {input_path}")
         return
 
-    # Prüfe, welche Karten bereits augmentiert wurden
-    already_augmented = set()
-    for f in output_path.glob("*_original.jpg"):
-        already_augmented.add(f.stem.replace("_original", ""))
+    card_sources: Dict[str, Tuple[Optional[str], Path]] = {}
+    for img in image_files:
+        meta = parse_scryfall_filename(img.name)
+        if not meta:
+            continue
+        card_uuid = meta[0]
+        set_code = meta[1]
+        card_sources.setdefault(card_uuid, (set_code, img))
 
-    # Filtere nur neue Karten
-    new_image_files = [img for img in image_files if img.stem not in already_augmented]
-
-    print(f"📋 Gefunden: {len(image_files)} Scryfall-Bilder, davon {len(new_image_files)} neue Karten")
-    print(f"🎯 Erstelle {args.num_augmentations} Camera-ähnliche Augmentierungen pro Bild (nur neue Karten)")
-    print(f"📋 Camera-Parameter: Helligkeit={camera_params['brightness_range']}, "
-          f"Kontrast={camera_params['contrast_range']}, Blur=0-{args.blur_max}, "
-          f"Rauschen=0-{args.noise_max}, Rotation=±{args.rotation_max}°")
+    print(f"📋 Gefunden: {len(card_sources)} eindeutige Karten in {input_path}")
+    print(f"🎯 Erstelle {args.num_augmentations} Kamera-Augmentierungen pro Karte")
+    print(
+        f"📋 Camera-Parameter: Helligkeit={camera_params['brightness_range']}, "
+        f"Kontrast={camera_params['contrast_range']}, Blur=0-{args.blur_max}, "
+        f"Rauschen=0-{args.noise_max}, Rotation=±{args.rotation_max}°"
+    )
     print(f"🎨 Hintergrundfarbe: {args.background_color}")
 
-    # Augmentor erstellen
     augmentor = CameraLikeAugmentor(**camera_params)
+    crop_cfg = load_symbol_crop_cfg()
 
-    total_generated = 0
+    total_variants = 0
+    skipped = 0
 
-    for img_file in new_image_files:
-        print(f"\n🔄 Verarbeite: {img_file.name}")
+    for card_uuid, (set_code, img_file) in tqdm(card_sources.items(), desc="Augmentiere Karten", unit="card"):
+        if set_code:
+            card_dir = output_path / set_code / card_uuid
+        else:
+            card_dir = output_path / card_uuid
+        full_dir = card_dir / "full"
+        symbol_dir = card_dir / "symbol"
+
+        if card_dir.exists():
+            if not args.overwrite:
+                skipped += 1
+                continue
+            shutil.rmtree(card_dir)
+
+        full_dir.mkdir(parents=True, exist_ok=True)
+        if args.save_symbol_crops:
+            symbol_dir.mkdir(parents=True, exist_ok=True)
+
         try:
-            original_img = Image.open(img_file).convert('RGB')
-            print(f"   📐 Original-Format: {original_img.size}")
+            original_img = Image.open(img_file).convert("RGB")
             augmentations = augmentor.create_camera_like_augmentations(
-                original_img, 
-                num_augmentations=args.num_augmentations
+                original_img, num_augmentations=args.num_augmentations
             )
-            card_name = img_file.stem
-            for i, aug_img in enumerate(augmentations):
-                if i == 0:
-                    output_name = f"{card_name}_original.jpg"
-                else:
-                    output_name = f"{card_name}_aug_{i:02d}.jpg"
-                output_file = output_path / output_name
-                aug_img.save(output_file, 'JPEG', quality=85)
-                print(f"   💾 Gespeichert: {output_name} ({aug_img.size})")
-                total_generated += 1
-        except Exception as e:
-            print(f"   ❌ Fehler bei {img_file.name}: {e}")
+            if len(augmentations) <= 1:
+                print(f"[WARN] Keine Augmentierungen für {img_file.name}")
+                continue
 
-    print(f"\n✅ Fertig! {total_generated} augmentierte Bilder erstellt in {output_path}")
-    print(f"📂 Format: Original Scryfall-Format (488x680) beibehalten")
-    print(f"🎭 Camera-Bedingungen: Belichtung, Kontrast, Blur, Rauschen, Rotation, Perspektive, Schatten")
+            for aug_idx, aug_img in enumerate(augmentations[1:]):
+                filename = f"{card_uuid}_aug_{aug_idx:02d}.jpg"
+                full_path = full_dir / filename
+                aug_img.save(full_path, "JPEG", quality=args.jpg_quality)
+
+                if args.save_symbol_crops:
+                    crop_img = crop_set_symbol(aug_img, crop_cfg)
+                    crop_img.save(symbol_dir / filename, "JPEG", quality=args.jpg_quality)
+                total_variants += 1
+        except Exception as exc:
+            print(f"❌ Fehler bei {img_file.name}: {exc}")
+
+    print(
+        f"\n✅ Fertig! {total_variants} augmentierte Varianten gespeichert in {output_path} "
+        f"(übersprungen: {skipped})"
+    )
+    if args.save_symbol_crops:
+        print("🧩 Symbol-Crops wurden parallel abgelegt.")
 
 
 if __name__ == "__main__":

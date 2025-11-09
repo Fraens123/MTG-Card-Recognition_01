@@ -46,6 +46,23 @@ CardScannerCNN_02/
 └── output_matches/          # Erkennungs-Visualisierungen (OUTPUT)
 ```
 
+## Precompute-Augmentierungen
+
+Damit das Training nicht dauernd auf die CPU warten muss, kannst du die Kamera-Augmentierungen jetzt einmalig vorberechnen:
+
+1. `python -m src.cardscanner.augment_cards --input_dir data/scryfall_images` erzeugt pro Karte
+   `augmentation.precompute_variants` Varianten und speichert sie unter `data/precomputed_augmented/<card_uuid>/full/`.
+   Wenn `augmentation.save_symbol_crops` aktiv ist, landen parallel die Set-Symbol-Crops unter `symbol/`.
+2. `config.yaml -> data.precomputed_augmented` definiert den Zielordner; mit `--overwrite` lassen sich einzelne Karten neu erzeugen.
+3. Das Training konsumiert bevorzugt diese vorberechneten Varianten: Anchors bleiben Original-Scryfall-Bilder,
+   Positive/Negative kommen aus `precomputed_augmented`. Über `training.samples_per_card` stellst du ein,
+   wie oft jede Karte pro Epoche garantiert erscheint.
+
+Auch der Embedding-Export kann optional auf diese vorberechneten Varianten zurückgreifen (`embedding_export.use_precomputed: true`),
+damit beim Generieren der Datenbank keine zeitaufwändigen On-the-fly-Augmentierungen mehr nötig sind.
+
+Ohne vorberechnete Varianten fällt das Dataset automatisch auf die vorherige On-the-fly-Pipeline zurück – so kannst du beide Wege kombinieren.
+
 ## ⚙️ Technische Details
 
 ### Architektur

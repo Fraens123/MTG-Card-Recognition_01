@@ -58,7 +58,6 @@ def get_transforms(resize_hw: Tuple[int, int]) -> Tuple[T.Compose, T.Compose]:
     train_transform = T.Compose([
         T.Resize(resize_hw, antialias=True),
         T.RandomHorizontalFlip(),
-        T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
         T.ToTensor(),
         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
@@ -169,6 +168,7 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
     training_cfg = config["training"]
     model_cfg = config["model"]
     hardware_cfg = config["hardware"]
+    data_cfg = config.get("data", {})
 
     use_cuda = hardware_cfg.get("use_cuda", True) and torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
@@ -185,8 +185,16 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
 
     aug_anchor, base = get_transforms(resize_hw)
     # Caching-Parameter aus config.yaml holen
-    cache_images = config["training"].get("cache_images", True)
-    cache_max_size = config["training"].get("cache_max_size", 1000)
+    cache_images = training_cfg.get("cache_images", True)
+    cache_max_size = training_cfg.get("cache_max_size", 1000)
+    loader_workers = training_cfg.get("workers", 8)
+    pin_memory = training_cfg.get("pin_memory", True)
+    persistent_workers_cfg = training_cfg.get("persistent_workers", True)
+    prefetch_factor_cfg = training_cfg.get("prefetch_factor", 2)
+    precomputed_dir = data_cfg.get("precomputed_augmented")
+    slots_per_card = training_cfg.get("samples_per_card", 1)
+    anchor_from_original = config["augmentation"].get("anchor_from_original", True)
+
     dataset = TripletImageDataset(
         images_dir,
         camera_dir,
@@ -197,11 +205,17 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
         augmentor_params=config.get("augmentation", {}),
         cache_images=cache_images,
         cache_max_size=cache_max_size,
+        precomputed_dir=precomputed_dir,
+        anchor_from_original=anchor_from_original,
+        slots_per_card=max(1, int(slots_per_card)),
     )
     print(f"\n[INFO] Trainingsdaten: {len(dataset.card_ids)} Karten (Originalbilder)")
-    print(f"[INFO] Augmentierungen pro Karte: {config['augmentation'].get('num_augmentations', 1)} (on-the-fly im RAM)")
-    print(f"[INFO] Erwartete Embeddings pro Karte: {config['augmentation'].get('num_augmentations', 1)}")
-    print(f"[INFO] Gesamtzahl Trainingsdaten (theoretisch): {len(dataset.card_ids) * config['augmentation'].get('num_augmentations', 1)}")
+    if dataset.card_to_precomputed:
+        print(f"[INFO] Vorab augmentierte Karten: {len(dataset.card_to_precomputed)}")
+    else:
+        print("[INFO] Keine vorab augmentierten Karten gefunden – fallback auf On-the-fly")
+    print(f"[INFO] Slots pro Karte/Epoche: {dataset.slots_per_card}")
+    print(f"[INFO] Erwartete Samples pro Epoche: {len(dataset)}")
 
     # Initialisiere Modell vor Preview
     model = Encoder(
@@ -220,13 +234,17 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
         print("No training data found!")
         return None
 
-    loader = DataLoader(
-        dataset,
+    loader_kwargs = dict(
         batch_size=training_cfg["batch_size"],
         shuffle=True,
-        num_workers=training_cfg["workers"],
+        num_workers=loader_workers,
         drop_last=True,
+        pin_memory=pin_memory,
     )
+    if loader_workers > 0:
+        loader_kwargs["persistent_workers"] = persistent_workers_cfg
+        loader_kwargs["prefetch_factor"] = prefetch_factor_cfg
+    loader = DataLoader(dataset, **loader_kwargs)
 
     print(f"Classes (card UUIDs): {dataset.num_classes}")
     model = Encoder(
@@ -246,6 +264,7 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
 
     best_loss = float("inf")
     best_state = None
+    patience_limit = training_cfg.get("early_stopping_patience", 0)
     patience_counter = 0
 
     symbol_loss_weight = training_cfg.get("symbol_loss_weight", 0.5)
@@ -315,14 +334,21 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
             })
 
         avg_loss = running_loss / max(1, len(loader))
-        print(f"Epoch {epoch+1}: loss={avg_loss:.4f}")
 
-        if avg_loss < best_loss:
+        improved = avg_loss < best_loss
+        if improved:
             best_loss = avg_loss
             best_state = model.state_dict()
             patience_counter = 0
         else:
             patience_counter += 1
+
+        if patience_limit > 0:
+            remaining = max(patience_limit - patience_counter, 0)
+            patience_info = f"{patience_counter}/{patience_limit} (rest {remaining})"
+        else:
+            patience_info = "n/a"
+        print(f"Epoch {epoch+1}: loss={avg_loss:.4f} | best={best_loss:.4f} | patience={patience_info}")
 
         if avg_loss <= training_cfg["min_loss_threshold"]:
             print("Stopping because loss threshold reached")

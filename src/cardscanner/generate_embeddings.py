@@ -1,50 +1,101 @@
 import os
 import sys
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.cardscanner.dataset import parse_scryfall_filename, crop_set_symbol
+from src.cardscanner.dataset import parse_scryfall_filename
+from src.cardscanner.crop_utils import crop_set_symbol
 import torch.utils.data as data
 
 # PyTorch Dataset für parallele Embedding-Generierung
 class CardAugmentDataset(data.Dataset):
-    def __init__(self, image_files, augmentor, num_augmentations, transform, meta_parser):
+    def __init__(
+        self,
+        image_files,
+        augmentor,
+        num_augmentations,
+        transform,
+        meta_parser,
+        precomputed_variants=None,
+        use_precomputed=False,
+        precomputed_limit=None,
+    ):
         self.image_files = image_files
         self.augmentor = augmentor
         self.num_augmentations = num_augmentations
         self.transform = transform
         self.meta_parser = meta_parser
+        self.precomputed_variants = precomputed_variants or {}
+        self.use_precomputed = use_precomputed and bool(self.precomputed_variants)
+        self.precomputed_limit = precomputed_limit
         self.samples = []
-        # Erzeuge Sample-Liste: (img_path, aug_idx)
+        self._build_sample_list()
+
+    def _build_sample_list(self):
         for img_path in self.image_files:
-            for aug_idx in range(num_augmentations + 1):
-                self.samples.append((img_path, aug_idx))
+            meta = self.meta_parser(os.path.basename(img_path))
+            if not meta:
+                continue
+            card_uuid = meta[0]
+            # Stelle sicher, dass das Originalbild immer mindestens einmal eingebettet wird
+            self.samples.append({
+                "mode": "original",
+                "orig_path": str(img_path),
+                "meta": meta,
+            })
+            if self.use_precomputed and card_uuid in self.precomputed_variants:
+                variants = self.precomputed_variants[card_uuid]
+                if self.precomputed_limit:
+                    variants = variants[: self.precomputed_limit]
+                for full_path, symbol_path in variants:
+                    self.samples.append({
+                        "mode": "precomputed",
+                        "full_path": full_path,
+                        "symbol_path": symbol_path,
+                        "meta": meta,
+                        "orig_path": str(img_path),
+                    })
+            else:
+                for aug_idx in range(1, self.num_augmentations + 1):
+                    self.samples.append({
+                        "mode": "augment",
+                        "orig_path": str(img_path),
+                        "meta": meta,
+                        "aug_idx": aug_idx,
+                    })
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        img_path, aug_idx = self.samples[idx]
-        img = Image.open(img_path).convert('RGB')
-        if aug_idx == 0:
-            aug_img = img
+        sample = self.samples[idx]
+        mode = sample["mode"]
+        meta = sample["meta"]
+
+        if mode == "precomputed":
+            full_img = Image.open(sample["full_path"]).convert("RGB")
+            symbol_path = sample.get("symbol_path")
+            if symbol_path and os.path.exists(symbol_path):
+                crop_img = Image.open(symbol_path).convert("RGB")
+            else:
+                crop_img = crop_set_symbol(full_img, None)
+            img_path = sample["orig_path"]
         else:
-            aug_img = self.augmentor.create_camera_like_augmentations(img, 1)[-1]
+            img = Image.open(sample["orig_path"]).convert("RGB")
+            if mode == "augment" and self.augmentor is not None:
+                full_img = self.augmentor.create_camera_like_augmentations(img, 1)[-1]
+            else:
+                full_img = img
+            crop_img = crop_set_symbol(full_img, None)
+            img_path = sample["orig_path"]
 
-        # Vollbild-Tensor
-        tensor_full = self.transform(aug_img)
-
-        # Set-Symbol-Crop (aus augmentiertem Bild)
-        crop_img = crop_set_symbol(aug_img, None)
+        tensor_full = self.transform(full_img)
         tensor_crop = self.transform(crop_img)
-
-        import os
-        meta = self.meta_parser(os.path.basename(img_path))
-        # Rückgabe: ((full, crop), pfad, meta)
-        return (tensor_full, tensor_crop), str(img_path), meta
+        return (tensor_full, tensor_crop), img_path, meta
 
 
 def collate_card_batch(batch):
@@ -65,6 +116,36 @@ def collate_card_batch(batch):
     full_batch = torch.stack(full_list, dim=0)
     crop_batch = torch.stack(crop_list, dim=0)
     return (full_batch, crop_batch), paths, metas
+
+
+def load_precomputed_variants(precomputed_root: str) -> Dict[str, List[Tuple[str, Optional[str]]]]:
+    """
+    Liest vorberechnete Augmentierungen aus data/precomputed_augmented/…
+    und liefert ein Mapping card_uuid -> [(full_path, symbol_path), ...]
+    """
+    variant_map: Dict[str, List[tuple]] = {}
+    if not precomputed_root or not os.path.isdir(precomputed_root):
+        return variant_map
+
+    for dirpath, dirnames, _ in os.walk(precomputed_root):
+        if os.path.basename(dirpath) != "full":
+            continue
+        card_dir = os.path.dirname(dirpath)
+        card_uuid = os.path.basename(card_dir)
+        symbol_dir = os.path.join(card_dir, "symbol")
+        variants = []
+        for fname in sorted(os.listdir(dirpath)):
+            if not fname.lower().endswith((".jpg", ".jpeg", ".png")):
+                continue
+            full_path = os.path.join(dirpath, fname)
+            symbol_path = None
+            candidate = os.path.join(symbol_dir, fname)
+            if os.path.exists(candidate):
+                symbol_path = candidate
+            variants.append((full_path, symbol_path))
+        if variants:
+            variant_map[card_uuid] = variants
+    return variant_map
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -152,20 +233,44 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
     num_augmentations = emb_export.get("num_augmentations", 20)
     batch_size = emb_export.get("batch_size", 64)
     workers = emb_export.get("workers", 4)
+    use_precomputed = emb_export.get("use_precomputed", False)
+    precomputed_limit = emb_export.get("precomputed_limit")
+    if precomputed_limit is not None:
+        try:
+            precomputed_limit = int(precomputed_limit)
+        except (TypeError, ValueError):
+            print(f"[WARN] Ungültiger Wert für embedding_export.precomputed_limit -> {precomputed_limit}. Verwende alle Varianten.")
+            precomputed_limit = None
+    data_cfg = config.get("data", {})
+    precomputed_root = data_cfg.get("precomputed_augmented")
+    precomputed_variants = {}
+    if use_precomputed:
+        precomputed_variants = load_precomputed_variants(precomputed_root)
+        total_precomputed = sum(len(v) for v in precomputed_variants.values())
+        if not precomputed_variants:
+            print("[INFO] Keine vorberechneten Augmentierungen gefunden – fallback auf On-the-fly.")
+            use_precomputed = False
+        else:
+            print(f"[INFO] Nutze vorberechnete Augmentierungen: {len(precomputed_variants)} Karten / {total_precomputed} Varianten")
+            if precomputed_limit:
+                print(f"[INFO] Max. Varianten pro Karte für Export: {precomputed_limit}")
+
     aug_params = config.get("augmentation", {})
-    camera_augmentor = CameraLikeAugmentor(
-        brightness_range=(aug_params.get("brightness_min", 0.9), aug_params.get("brightness_max", 1.3)),
-        contrast_range=(aug_params.get("contrast_min", 0.98), aug_params.get("contrast_max", 1.02)),
-        blur_range=(0.0, aug_params.get("blur_max", 3.2)),
-        noise_range=(0, aug_params.get("noise_max", 5.0)),
-        rotation_range=(-aug_params.get("rotation_max", 5.0), aug_params.get("rotation_max", 5.0)),
-        perspective=aug_params.get("perspective", 0.05),
-        shadow=aug_params.get("shadow", 0.14),
-        saturation_range=(aug_params.get("saturation_min", 0.8), aug_params.get("saturation_max", 1.2)),
-        color_temperature_range=(aug_params.get("color_temperature_min", 0.84), aug_params.get("color_temperature_max", 1.16)),
-        hue_shift_max=aug_params.get("hue_shift_max", 15.0),
-        background_color=aug_params.get("background_color", "white"),
-    )
+    camera_augmentor = None
+    if not use_precomputed:
+        camera_augmentor = CameraLikeAugmentor(
+            brightness_range=(aug_params.get("brightness_min", 0.9), aug_params.get("brightness_max", 1.3)),
+            contrast_range=(aug_params.get("contrast_min", 0.98), aug_params.get("contrast_max", 1.02)),
+            blur_range=(0.0, aug_params.get("blur_max", 3.2)),
+            noise_range=(0, aug_params.get("noise_max", 5.0)),
+            rotation_range=(-aug_params.get("rotation_max", 5.0), aug_params.get("rotation_max", 5.0)),
+            perspective=aug_params.get("perspective", 0.05),
+            shadow=aug_params.get("shadow", 0.14),
+            saturation_range=(aug_params.get("saturation_min", 0.8), aug_params.get("saturation_max", 1.2)),
+            color_temperature_range=(aug_params.get("color_temperature_min", 0.84), aug_params.get("color_temperature_max", 1.16)),
+            hue_shift_max=aug_params.get("hue_shift_max", 15.0),
+            background_color=aug_params.get("background_color", "white"),
+        )
 
     # Alle Bilddateien finden
     image_files = []
@@ -197,7 +302,16 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
     card_meta = dict()
     errors = 0
 
-    dataset = CardAugmentDataset(image_files, camera_augmentor, num_augmentations, transform, parse_scryfall_filename)
+    dataset = CardAugmentDataset(
+        image_files,
+        camera_augmentor,
+        num_augmentations,
+        transform,
+        parse_scryfall_filename,
+        precomputed_variants=precomputed_variants,
+        use_precomputed=use_precomputed,
+        precomputed_limit=precomputed_limit,
+    )
     loader = data.DataLoader(
         dataset,
         batch_size=batch_size,

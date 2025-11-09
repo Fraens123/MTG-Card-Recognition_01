@@ -1,4 +1,0 @@
-embeddings {
-  tensor_path: "projector_vectors.tsv"
-  metadata_path: "projector_metadata.tsv"
-}
