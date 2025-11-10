@@ -262,8 +262,8 @@ def export_embeddings(
                 skipped += 1
                 continue
 
-    with Image.open(img_path).convert("RGB") as img:
-        embedding = encode_search_embedding(model, img, transform, device)
+            with Image.open(img_path).convert("RGB") as img:
+                embedding = encode_search_embedding(model, img, transform, device)
 
             emb_fh.write("\t".join(f"{value:.8f}" for value in embedding) + "\n")
             meta_row = [sanitize_text(card.get(key, "")) for key in DEFAULT_METADATA_FIELDS]

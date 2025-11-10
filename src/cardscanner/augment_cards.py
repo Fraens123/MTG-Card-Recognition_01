@@ -83,7 +83,7 @@ class CameraLikeAugmentor:
         return enhancer.enhance(factor)
     
     def augment_motion_blur(self, img: Image.Image) -> Image.Image:
-        """Simuliert Bewegungsunschärfe"""
+        """Simuliert Bewegungsunschärfe (teuer: großer GaussianBlur läuft komplett auf der CPU)"""
         radius = random.uniform(*self.blur_range)
         if radius > 0.1:
             return img.filter(ImageFilter.GaussianBlur(radius=radius))
@@ -105,7 +105,7 @@ class CameraLikeAugmentor:
         return img.rotate(angle, expand=False, fillcolor=self.fill_color)
     
     def augment_perspective(self, img: Image.Image) -> Image.Image:
-        """Simuliert leichte perspektivische Verzerrung"""
+        """Simuliert leichte perspektivische Verzerrung (Warp-Transform kostet merklich CPU-Zeit)"""
         if random.random() > self.perspective_strength:
             return img
         
@@ -127,7 +127,7 @@ class CameraLikeAugmentor:
         return img
     
     def augment_shadow(self, img: Image.Image) -> Image.Image:
-        """Simuliert ungleichmäßige Beleuchtung/Schatten"""
+        """Simuliert ungleichmäßige Beleuchtung/Schatten (Maskenberechnung ist RAM-intensiv)"""
         if random.random() > self.shadow_strength:
             return img
             

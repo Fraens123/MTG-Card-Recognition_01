@@ -112,6 +112,7 @@ class TripletImageDataset(Dataset):
         augmentor_params: dict = None,
         cache_images: bool = True,
         cache_max_size: int = 1000,
+        max_samples_per_epoch: Optional[int] = None,
     ) -> None:
         """
         Dataset für MTG-Karten Triplet Training.
@@ -157,51 +158,60 @@ class TripletImageDataset(Dataset):
         else:
             self._image_cache = None
         self.cache_images = cache_images
+        self.max_samples_per_epoch = max_samples_per_epoch
 
         print(f"Lade Originalbilder aus: {self.scryfall_dir}")
 
-        # Lade nur die Originalbilder (keine augmentierten Varianten)
-        for root, _, files in os.walk(self.scryfall_dir):
-            for f in files:
-                if not f.lower().endswith((".jpg", ".jpeg", ".png")):
+        def iter_top_level_images(folder: str):
+            try:
+                entries = os.listdir(folder)
+            except FileNotFoundError:
+                print(f"[WARN] Verzeichnis nicht gefunden: {folder}")
+                return
+            for name in entries:
+                path = os.path.join(folder, name)
+                if not os.path.isfile(path):
+                    continue  # Unterordner werden bewusst ignoriert
+                if not name.lower().endswith((".jpg", ".jpeg", ".png")):
                     continue
-                p = os.path.join(root, f)
-                meta = parse_scryfall_filename(f)
-                if not meta:
-                    print(f"Kann nicht parsen: {f}")
-                    continue
-                card_uuid = meta[0]
-                self.card_to_paths.setdefault(card_uuid, []).append(p)
-                # Optionales Vorab-Caching (nur wenn cache_images und cache_max_size groß genug)
-                if self.cache_images and len(self._image_cache) < self._image_cache.max_size:
-                    try:
-                        self._image_cache[p] = Image.open(p).convert("RGB")
-                    except Exception as e:
-                        print(f"[Cache] Fehler beim Laden von {p}: {e}")
+                yield path, name
+
+        # Lade nur die Dateien direkt im scryfall_dir (keine Unterordner)
+        for img_path, filename in iter_top_level_images(self.scryfall_dir):
+            meta = parse_scryfall_filename(filename)
+            if not meta:
+                print(f"Kann nicht parsen: {filename}")
+                continue
+            card_uuid = meta[0]
+            self.card_to_paths.setdefault(card_uuid, []).append(img_path)
+            if self.cache_images and len(self._image_cache) < self._image_cache.max_size:
+                try:
+                    self._image_cache[img_path] = Image.open(img_path).convert("RGB")
+                except Exception as e:
+                    print(f"[Cache] Fehler beim Laden von {img_path}: {e}")
 
         # Optional: Lade echte Kamera-Bilder
         if self.camera_dir and os.path.exists(self.camera_dir):
             print(f"Lade Camera-Bilder aus: {self.camera_dir}")
-            for root, _, files in os.walk(self.camera_dir):
-                for f in files:
-                    if not f.lower().endswith((".jpg", ".jpeg", ".png")):
-                        continue
-                    p = os.path.join(root, f)
-                    meta = parse_scryfall_filename(p)
-                    if not meta:
-                        continue
-                    card_uuid = meta[0]
-                    self.card_to_paths.setdefault(card_uuid, []).append(p)
-                    # Optionales Vorab-Caching (nur wenn cache_images und cache_max_size groß genug)
-                    if self.cache_images and len(self._image_cache) < self._image_cache.max_size:
-                        try:
-                            self._image_cache[p] = Image.open(p).convert("RGB")
-                        except Exception as e:
-                            print(f"[Cache] Fehler beim Laden von {p}: {e}")
+            for img_path, filename in iter_top_level_images(self.camera_dir):
+                meta = parse_scryfall_filename(filename)
+                if not meta:
+                    continue
+                card_uuid = meta[0]
+                self.card_to_paths.setdefault(card_uuid, []).append(img_path)
+                if self.cache_images and len(self._image_cache) < self._image_cache.max_size:
+                    try:
+                        self._image_cache[img_path] = Image.open(img_path).convert("RGB")
+                    except Exception as e:
+                        print(f"[Cache] Fehler beim Laden von {img_path}: {e}")
 
         self.card_ids = sorted(list(self.card_to_paths.keys()))
         self.card_to_idx = {card_id: idx for idx, card_id in enumerate(self.card_ids)}
         self.all_paths = [p for paths in self.card_to_paths.values() for p in paths]
+        # Basismenge = alle vorhandenen Bildpfade (Scryfall + Kamera)
+        self.total_available_samples = len(self.all_paths)
+        if self.total_available_samples == 0:
+            print("[WARN] TripletImageDataset: keine Trainingsbilder gefunden – Dataset bleibt leer.")
 
         print(f"Gefunden:")
         print(f"  - {len(self.card_ids)} eindeutige Karten")
@@ -269,7 +279,17 @@ class TripletImageDataset(Dataset):
         print(f"Augmentierungen gespeichert in: {output_dir}")
 
     def __len__(self) -> int:
-        return max(1, len(self.all_paths))
+        """
+        Basis-Länge = Anzahl der real vorhandenen Bildpfade (all_paths).
+        Über max_samples_per_epoch kann die effektive Länge gedeckelt werden,
+        damit der DataLoader weniger Triplets pro Epoche zieht,
+        während __getitem__ unverändert augmentiert.
+        """
+        if self.total_available_samples == 0:
+            return 0
+        if not self.max_samples_per_epoch or self.max_samples_per_epoch <= 0:
+            return self.total_available_samples
+        return min(self.total_available_samples, self.max_samples_per_epoch)
 
     def _sample_negative_uuid(self, positive_uuid: str) -> str:
         # Schnelleres negatives Sampling
