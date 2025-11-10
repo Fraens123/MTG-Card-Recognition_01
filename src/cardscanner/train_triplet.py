@@ -187,9 +187,14 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
     # Caching-Parameter aus config.yaml holen
     cache_images = config["training"].get("cache_images", True)
     cache_max_size = config["training"].get("cache_max_size", 1000)
+    use_camera_images = training_cfg.get("use_camera_images", False)
+    dataset_camera_dir = camera_dir if (use_camera_images and camera_dir and os.path.exists(camera_dir)) else None
+    if camera_dir and not use_camera_images:
+        print("[INFO] Kamera-Bilder werden für das Training deaktiviert (training.use_camera_images = False).")
+
     dataset = TripletImageDataset(
         images_dir,
-        camera_dir,
+        dataset_camera_dir,
         aug_anchor,
         base,
         seed=training_cfg.get("seed", 42),
@@ -229,6 +234,15 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
     )
 
     print(f"Classes (card UUIDs): {dataset.num_classes}")
+    print(f"[INFO] Trainingsdateien (inkl. Kamera): {len(dataset.all_paths)}")
+    full_batches = len(loader)
+    print(f"[INFO] Batches pro Epoche (ohne Limit): {full_batches}")
+    if training_cfg.get("max_batches_per_epoch"):
+        print(f"[INFO] Limitiere Batches pro Epoche auf {training_cfg['max_batches_per_epoch']}")
+
+    max_batches = training_cfg.get("max_batches_per_epoch")
+    effective_batches = min(full_batches, max_batches) if max_batches else full_batches
+
     model = Encoder(
         embed_dim=model_cfg["embed_dim"],
         num_classes=dataset.num_classes,
@@ -253,7 +267,13 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
     for epoch in range(training_cfg["epochs"]):
         model.train()
         running_loss = 0.0
-        batch_iter = tqdm(loader, desc=f"Epoch {epoch+1}/{training_cfg['epochs']}", unit="batch")
+        processed_batches = 0
+        batch_iter = tqdm(
+            loader,
+            desc=f"Epoch {epoch+1}/{training_cfg['epochs']}",
+            unit="batch",
+            total=effective_batches,
+        )
         for batch in batch_iter:
             (
                 anchor_full,
@@ -307,14 +327,17 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
             optimizer.step()
 
             running_loss += loss.item()
+            processed_batches += 1
             batch_iter.set_postfix({
                 "loss": f"{loss.item():.4f}",
                 "trip_full": f"{triplet_loss_full.item():.4f}",
                 "trip_crop": f"{triplet_loss_crop.item():.4f}",
                 "ce": f"{ce_loss.item():.4f}",
             })
+            if max_batches and processed_batches >= max_batches:
+                break
 
-        avg_loss = running_loss / max(1, len(loader))
+        avg_loss = running_loss / max(1, processed_batches)
         print(f"Epoch {epoch+1}: loss={avg_loss:.4f}")
 
         if avg_loss < best_loss:

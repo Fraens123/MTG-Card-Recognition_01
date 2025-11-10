@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
 import torch
+import torch.nn.functional as F
 import torchvision.transforms as T
 import yaml
 from PIL import Image
 
 sys.path.insert(0, ".")
 from src.cardscanner.model import load_encoder  # noqa: E402
+from src.cardscanner.dataset import crop_set_symbol  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -139,6 +141,24 @@ def build_transform(target_size: Sequence[int]) -> T.Compose:
     )
 
 
+def encode_search_embedding(model, image: Image.Image, transform: T.Compose, device: torch.device):
+    """
+    Repliziert die Embedding-Pipeline aus generate_embeddings.py:
+    full + crop je normalisieren, konkatten, erneut normalisieren.
+    """
+    tensor_full = transform(image).unsqueeze(0).to(device)
+    crop_image = crop_set_symbol(image, None)
+    tensor_crop = transform(crop_image).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        emb_full = F.normalize(model(tensor_full), p=2, dim=-1)
+        emb_crop = F.normalize(model(tensor_crop), p=2, dim=-1)
+        combined = torch.cat([emb_full, emb_crop], dim=-1)
+        combined = F.normalize(combined, p=2, dim=-1)
+
+    return combined.squeeze(0).cpu().tolist()
+
+
 def sanitize_text(value: object) -> str:
     text = "" if value is None else str(value)
     return text.replace("\t", " ").replace("\n", " ").strip()
@@ -242,9 +262,8 @@ def export_embeddings(
                 skipped += 1
                 continue
 
-            with Image.open(img_path).convert("RGB") as img:
-                tensor = transform(img).unsqueeze(0).to(device)
-                embedding = model.encode_normalized(tensor).cpu().squeeze(0).tolist()
+    with Image.open(img_path).convert("RGB") as img:
+        embedding = encode_search_embedding(model, img, transform, device)
 
             emb_fh.write("\t".join(f"{value:.8f}" for value in embedding) + "\n")
             meta_row = [sanitize_text(card.get(key, "")) for key in DEFAULT_METADATA_FIELDS]
