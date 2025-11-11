@@ -16,6 +16,7 @@ from src.cardscanner.image_pipeline import (
     resolve_resize_hw,
 )
 from torchvision import transforms as tv_transforms
+from torchvision.transforms.functional import InterpolationMode
 
 
 def build_export_augmentation_transform() -> tv_transforms.Compose:
@@ -27,7 +28,12 @@ def build_export_augmentation_transform() -> tv_transforms.Compose:
                 p=0.8,
             ),
             tv_transforms.RandomApply([tv_transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.7))], p=0.3),
-            tv_transforms.RandomRotation(2, fill=0),
+            tv_transforms.RandomRotation(
+                degrees=2,
+                interpolation=InterpolationMode.BICUBIC,
+                fill=0,
+                expand=False,
+            ),
         ]
     )
 

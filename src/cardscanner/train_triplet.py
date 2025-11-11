@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
 import torchvision.transforms as T
+from torchvision.transforms.functional import InterpolationMode
 import torchvision.utils as vutils
 from PIL import Image
 import yaml
@@ -49,7 +50,12 @@ def get_transforms(resize_hw: Tuple[int, int], variant: str = "full") -> Tuple[T
     if variant == "light":
         anchor_transform = T.Compose([
             T.Resize(resize_hw, antialias=True),
-            T.RandomRotation(1.5, fill=0),
+            T.RandomRotation(
+                1.5,
+                fill=0,
+                interpolation=InterpolationMode.BICUBIC,
+                expand=False,
+            ),
             T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.05, hue=0.01),
             T.ToTensor(),
             T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
@@ -59,7 +65,12 @@ def get_transforms(resize_hw: Tuple[int, int], variant: str = "full") -> Tuple[T
             T.Resize(resize_hw, antialias=True),
             T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
             T.RandomApply([T.GaussianBlur(3, sigma=(0.1, 0.8))], p=0.15),
-            T.RandomRotation(2, fill=0),
+            T.RandomRotation(
+                2,
+                fill=0,
+                interpolation=InterpolationMode.BICUBIC,
+                expand=False,
+            ),
             T.ToTensor(),
             T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ])
