@@ -2,7 +2,7 @@
 """
 MTG Card Recognition Script
 Erkennt MTG-Karten aus Pi Camera-Bildern und vergleicht sie mit Scryfall-Referenzen.
-Nutzt Cosine-Similarity für die Kartenerkennung und erstellt Side-by-Side Vergleichsgrafiken.
+Nutzt Cosine-Similarity f-r die Kartenerkennung und erstellt Side-by-Side Vergleichsgrafiken.
 """
 
 import os
@@ -23,27 +23,38 @@ from matplotlib.gridspec import GridSpec
 import seaborn as sns
 from tqdm import tqdm
 
-# Absolute Imports für direkten Aufruf
+# Absolute Imports f-r direkten Aufruf
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 # Try relative imports first, fallback to absolute
 try:
     from .model import load_encoder
     from .db import SimpleCardDB
-    from .dataset import parse_scryfall_filename, crop_set_symbol
-    from .image_pipeline import build_resize_normalize_transform, get_set_symbol_crop_cfg, resolve_resize_hw
+    from .dataset import parse_scryfall_filename
+    from .image_pipeline import (
+        build_resize_normalize_transform,
+        get_set_symbol_crop_cfg,
+        resolve_resize_hw,
+        crop_set_symbol,
+    )
     from .embedding_utils import build_card_embedding
 except ImportError:
-    # Fallback für direkten Aufruf
+    # Fallback f?r direkten Aufruf
     from src.cardscanner.model import load_encoder
     from src.cardscanner.db import SimpleCardDB
-    from src.cardscanner.dataset import parse_scryfall_filename, crop_set_symbol
-    from src.cardscanner.image_pipeline import build_resize_normalize_transform, get_set_symbol_crop_cfg, resolve_resize_hw
+    from src.cardscanner.dataset import parse_scryfall_filename
+    from src.cardscanner.image_pipeline import (
+        build_resize_normalize_transform,
+        get_set_symbol_crop_cfg,
+        resolve_resize_hw,
+        crop_set_symbol,
+    )
     from src.cardscanner.embedding_utils import build_card_embedding
 
 
+
 def load_config(config_path: str = "config.yaml") -> dict:
-    """Lädt YAML-Konfiguration direkt"""
+    """L-dt YAML-Konfiguration direkt"""
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config-Datei nicht gefunden: {config_path}")
     
@@ -57,7 +68,7 @@ def load_config(config_path: str = "config.yaml") -> dict:
 
 
 def get_inference_transforms(resize_hw: tuple = (320, 224)) -> T.Compose:
-    """Transform-Pipeline für Inference (identisch zur Embedding-Generierung). resize_hw = (H, W)."""
+    """Transform-Pipeline f-r Inference (identisch zur Embedding-Generierung). resize_hw = (H, W)."""
     return build_resize_normalize_transform(resize_hw)
 
 
@@ -67,7 +78,7 @@ def create_comparison_plot(camera_img_path: str, camera_img: Image.Image,
     """
     Erstellt eine Side-by-Side Vergleichsgrafik zwischen Camera- und Scryfall-Bild
     """
-    # Setup matplotlib mit größerem Plot und Unicode-fähiger Schriftart
+    # Setup matplotlib mit gr-?Yerem Plot und Unicode-f-higer Schriftart
     import matplotlib
     # Versuche Noto Sans Symbols als Schriftart zu setzen (falls installiert)
     try:
@@ -88,7 +99,7 @@ def create_comparison_plot(camera_img_path: str, camera_img: Image.Image,
     # Camera-Bild (links)
     camera_ax = fig.add_subplot(gs[1, 0])
     camera_ax.imshow(camera_img)
-    camera_ax.set_title("📷 Pi Camera Image", fontsize=16, fontweight='bold', pad=20)
+    camera_ax.set_title("Pi Camera Image", fontsize=16, fontweight='bold', pad=20)
     camera_ax.axis('off')
     
     # Scryfall-Bild (rechts) 
@@ -101,7 +112,7 @@ def create_comparison_plot(camera_img_path: str, camera_img: Image.Image,
         scryfall_ax.text(0.5, 0.5, "Bild nicht gefunden", ha='center', va='center', 
                         fontsize=14, transform=scryfall_ax.transAxes)
     
-    scryfall_ax.set_title("🃏 Best Match (Scryfall)", fontsize=16, fontweight='bold', pad=20)
+    scryfall_ax.set_title("Best Match (Scryfall)", fontsize=16, fontweight='bold', pad=20)
     scryfall_ax.axis('off')
     
     # Info-Bereich (unten)
@@ -110,35 +121,35 @@ def create_comparison_plot(camera_img_path: str, camera_img: Image.Image,
     
     # Informationstext erstellen
     camera_filename = Path(camera_img_path).name
-    info_text = f"""
-📊 SEARCH RESULTS:
-• Camera File: {camera_filename}
-• Best Match: {best_match['name']} (Set: {best_match['set_code']}, #{best_match['collector_number']})
-• Cosine Similarity: {similarity_score:.4f} ({similarity_score*100:.1f}%)
-• Search Time: {search_time*1000:.2f}ms
-• Card UUID: {best_match['card_uuid'][:8]}...
-• Image Path: {Path(best_match['image_path']).name}
-    """.strip()
+    info_text = (
+        f"SEARCH RESULTS:\n"
+        f"* Camera File: {camera_filename}\n"
+        f"* Best Match: {best_match['name']} (Set: {best_match['set_code']}, #{best_match['collector_number']})\n"
+        f"* Cosine Similarity: {similarity_score:.4f} ({similarity_score*100:.1f}%)\n"
+        f"* Search Time: {search_time*1000:.2f}ms\n"
+        f"* Card UUID: {best_match['card_uuid'][:8]}...\n"
+        f"* Image Path: {Path(best_match['image_path']).name}"
+    )
     
     # Farbkodierung basierend auf Similarity-Score
     if similarity_score > 0.8:
         color = 'green'
-        status = "🎯 EXCELLENT MATCH"
+        status = "EXCELLENT MATCH"
     elif similarity_score > 0.6:
-        color = 'orange' 
-        status = "⚠️ GOOD MATCH"
+        color = 'orange'
+        status = "GOOD MATCH"
     elif similarity_score > 0.4:
         color = 'red'
-        status = "❌ POOR MATCH"
+        status = "POOR MATCH"
     else:
         color = 'darkred'
-        status = "❌ NO MATCH"
+        status = "NO MATCH"
     
     info_ax.text(0.02, 0.95, info_text, fontsize=12, ha='left', va='top', 
                  transform=info_ax.transAxes, family='monospace',
                  bbox=dict(boxstyle="round,pad=0.5", facecolor='lightgray', alpha=0.8))
     
-    info_ax.text(0.98, 0.95, status, fontsize=14, fontweight='bold', 
+    info_ax.text(0.98, 0.95, status, fontsize=14, fontweight='bold',
                  ha='right', va='top', transform=info_ax.transAxes,
                  bbox=dict(boxstyle="round,pad=0.5", facecolor=color, alpha=0.8, edgecolor='black'))
     
@@ -160,14 +171,15 @@ def create_comparison_plot(camera_img_path: str, camera_img: Image.Image,
     # Speichern
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white', edgecolor='none')
     plt.close()
-    print(f"   💾 Vergleichsgrafik gespeichert: {output_path}")
+    print(f"   ?Y'? Vergleichsgrafik gespeichert: {output_path}")
 
 
-def search_camera_image(model: torch.nn.Module, transform: T.Compose, 
-                    db: SimpleCardDB, camera_img_path: str, 
-                    device: torch.device, config: dict, crop_cfg: dict | None) -> Tuple[Dict, float, float]:
+def search_camera_image(model: torch.nn.Module, transform: T.Compose,
+                        crop_transform: T.Compose,
+                        db: SimpleCardDB, camera_img_path: str,
+                        device: torch.device, config: dict, crop_cfg: dict | None) -> Tuple[Dict, float, float]:
     """
-    Führt Similarity-Search für ein Camera-Bild durch
+    F-hrt Similarity-Search f-r ein Camera-Bild durch
     """
     start_time = time.time()
     
@@ -178,9 +190,9 @@ def search_camera_image(model: torch.nn.Module, transform: T.Compose,
         img_tensor = transform(img_rgb).unsqueeze(0).to(device)
         # Set-Symbol-Crop
         crop_img = crop_set_symbol(img_rgb, crop_cfg)
-        crop_tensor = transform(crop_img).unsqueeze(0).to(device)
+        crop_tensor = crop_transform(crop_img).unsqueeze(0).to(device)
 
-    # Embedding generieren (Full + Crop) – identisch zum Export
+    # Embedding generieren (Full + Crop) -" identisch zum Export
     with torch.no_grad():
         query_embedding = build_card_embedding(model, img_tensor, crop_tensor).cpu().numpy().flatten()
 
@@ -190,7 +202,7 @@ def search_camera_image(model: torch.nn.Module, transform: T.Compose,
     results = db.search_similar(query_embedding, top_k=top_k, threshold=threshold)
 
     for rank, hit in enumerate(results, start=1):
-        print(f"[Rank {rank}] {hit['name']} – cos={hit['similarity']:.3f}")
+        print(f"[Rank {rank}] {hit['name']} - cos={hit['similarity']:.3f}")
 
     search_time = time.time() - start_time
 
@@ -207,26 +219,31 @@ def test_all_camera_images(config: dict, model_path: str, camera_dir: str,
     """
     Testet alle Camera-Bilder und erstellt Vergleichsgrafiken
     """
-    print(f"🔧 Lade trainiertes Modell: {model_path}")
+    print(f"?Y"? Lade trainiertes Modell: {model_path}")
     embed_dim = config['model']['embed_dim']
     model = load_encoder(model_path, embed_dim=embed_dim, device=device)
     model.eval()
     
-    print(f"📂 Lade Database...")
+    print(f"?Y", Lade Database...")
     db = SimpleCardDB()
     
     if len(db.cards) == 0:
-        print("❌ Database ist leer! Bitte zuerst Embeddings generieren.")
+        print("-O Database ist leer! Bitte zuerst Embeddings generieren.")
         return
     
-    print(f"🎯 Database geladen: {len(db.cards)} Karten")
+    print(f"?YZ? Database geladen: {len(db.cards)} Karten")
     
-    # Transform für Inference
+    # Transform f-r Inference
     resize_hw = resolve_resize_hw(config, config['data']['scryfall_images'])
     target_height, target_width = resize_hw
     transform = get_inference_transforms(resize_hw)
-    print(f'📐 Bildgr??e (Breite x H?he): {target_width}x{target_height}')
+    print(f'?Y"? Bildgr-e (Breite x H?he): {target_width}x{target_height}')
     crop_cfg = get_set_symbol_crop_cfg(config)
+    crop_resize_hw = (
+        crop_cfg.get("target_height", 64) if crop_cfg else 64,
+        crop_cfg.get("target_width", 160) if crop_cfg else 160,
+    )
+    crop_transform = build_resize_normalize_transform(crop_resize_hw)
 
     
 
@@ -240,35 +257,35 @@ def test_all_camera_images(config: dict, model_path: str, camera_dir: str,
         camera_files.extend(Path(camera_dir).glob(ext))
     
     if not camera_files:
-        print(f"❌ Keine Camera-Bilder gefunden in: {camera_dir}")
+        print(f"-O Keine Camera-Bilder gefunden in: {camera_dir}")
         return
     
-    print(f"📸 Gefunden: {len(camera_files)} Camera-Bilder")
-    print(f"📁 Output-Verzeichnis: {output_dir}")
+    print(f"?Y"? Gefunden: {len(camera_files)} Camera-Bilder")
+    print(f"?Y"? Output-Verzeichnis: {output_dir}")
     
     # Statistiken
     total_searches = len(camera_files)
     total_time = 0
     match_scores = []
     
-    print(f"\n🔍 Starte Similarity-Search für alle Camera-Bilder...")
+    print(f"\n?Y"? Starte Similarity-Search f-r alle Camera-Bilder...")
     
-    # Progress Bar für alle Camera-Bilder
+    # Progress Bar f-r alle Camera-Bilder
     for i, camera_file in enumerate(tqdm(camera_files, desc="Teste Camera-Bilder", unit="img"), 1):
         try:
-            print(f"\n[{i}/{total_searches}] 🔍 Verarbeite: {camera_file.name}")
+            print(f"\n[{i}/{total_searches}] ?Y"? Verarbeite: {camera_file.name}")
             
-            # Similarity-Search durchführen
+            # Similarity-Search durchf-hren
             best_match, similarity_score, search_time = search_camera_image(
-                model, transform, db, str(camera_file), device, config, crop_cfg
+                model, transform, crop_transform, db, str(camera_file), device, config, crop_cfg
             )
             
             total_time += search_time
             match_scores.append(similarity_score)
             
             if best_match:
-                print(f"   🎯 Best Match: {best_match['name']} ({similarity_score:.4f})")
-                print(f"   ⏱️ Search Time: {search_time*1000:.2f}ms")
+                print(f"   ?YZ? Best Match: {best_match['name']} ({similarity_score:.4f})")
+                print(f"   --- Search Time: {search_time*1000:.2f}ms")
                 
                 # Vergleichsgrafik erstellen
                 camera_img = Image.open(camera_file).convert('RGB')
@@ -280,23 +297,23 @@ def test_all_camera_images(config: dict, model_path: str, camera_dir: str,
                     similarity_score, search_time, str(output_filepath)
                 )
             else:
-                print(f"   ❌ Kein Match gefunden!")
+                print(f"   -O Kein Match gefunden!")
         
         except Exception as e:
-            print(f"   ❌ Fehler bei {camera_file.name}: {e}")
+            print(f"   -O Fehler bei {camera_file.name}: {e}")
             continue
     
     # Zusammenfassung
     print(f"\n" + "="*60)
-    print(f"📊 SIMILARITY SEARCH ZUSAMMENFASSUNG")
+    print(f"?Y"S SIMILARITY SEARCH ZUSAMMENFASSUNG")
     print(f"="*60)
-    print(f"🔍 Durchsuchte Bilder: {total_searches}")
-    print(f"⏱️ Gesamtzeit: {total_time:.2f}s")
-    print(f"🚀 Durchschnitt pro Bild: {(total_time/total_searches)*1000:.2f}ms")
-    print(f"📈 Beste Similarity: {max(match_scores):.4f}")
-    print(f"📉 Schlechteste Similarity: {min(match_scores):.4f}")
-    print(f"📊 Durchschnittliche Similarity: {np.mean(match_scores):.4f}")
-    print(f"📁 Vergleichsgrafiken gespeichert in: {output_dir}")
+    print(f"?Y"? Durchsuchte Bilder: {total_searches}")
+    print(f"--- Gesamtzeit: {total_time:.2f}s")
+    print(f"?Ys? Durchschnitt pro Bild: {(total_time/total_searches)*1000:.2f}ms")
+    print(f"?Y"^ Beste Similarity: {max(match_scores):.4f}")
+    print(f"?Y"? Schlechteste Similarity: {min(match_scores):.4f}")
+    print(f"?Y"S Durchschnittliche Similarity: {np.mean(match_scores):.4f}")
+    print(f"?Y"? Vergleichsgrafiken gespeichert in: {output_dir}")
     
     # Erstelle Gesamt-Statistik Grafik
     create_summary_plot(match_scores, total_time, total_searches, str(output_path / "summary_statistics.png"))
@@ -311,7 +328,7 @@ def create_summary_plot(match_scores: List[float], total_time: float,
     
     # Similarity Score Histogramm
     ax1.hist(match_scores, bins=20, color='skyblue', edgecolor='black', alpha=0.7)
-    ax1.set_title('📊 Similarity Score Verteilung', fontsize=14, fontweight='bold')
+    ax1.set_title('?Y"S Similarity Score Verteilung', fontsize=14, fontweight='bold')
     ax1.set_xlabel('Cosine Similarity')
     ax1.set_ylabel('Anzahl Bilder')
     ax1.axvline(np.mean(match_scores), color='red', linestyle='--', linewidth=2, label=f'Durchschnitt: {np.mean(match_scores):.3f}')
@@ -321,7 +338,7 @@ def create_summary_plot(match_scores: List[float], total_time: float,
     # Box Plot
     ax2.boxplot(match_scores, vert=True, patch_artist=True, 
                 boxprops=dict(facecolor='lightgreen', alpha=0.7))
-    ax2.set_title('📦 Similarity Score Box Plot', fontsize=14, fontweight='bold')
+    ax2.set_title('?Y"? Similarity Score Box Plot', fontsize=14, fontweight='bold')
     ax2.set_ylabel('Cosine Similarity')
     ax2.grid(True, alpha=0.3)
     
@@ -332,7 +349,7 @@ def create_summary_plot(match_scores: List[float], total_time: float,
     performance_colors = ['orange', 'red']
     
     bars = ax3.bar(performance_data, performance_values, color=performance_colors, alpha=0.7, edgecolor='black')
-    ax3.set_title('⏱️ Performance Metriken', fontsize=14, fontweight='bold')
+    ax3.set_title('--- Performance Metriken', fontsize=14, fontweight='bold')
     ax3.set_ylabel('Zeit (ms)')
     ax3.grid(True, alpha=0.3)
     
@@ -347,13 +364,13 @@ def create_summary_plot(match_scores: List[float], total_time: float,
     poor = sum(1 for score in match_scores if 0.4 < score <= 0.6)
     no_match = sum(1 for score in match_scores if score <= 0.4)
     
-    categories = ['Excellent\n(>0.8)', 'Good\n(0.6-0.8)', 'Poor\n(0.4-0.6)', 'No Match\n(≤0.4)']
+    categories = ['Excellent\n(>0.8)', 'Good\n(0.6-0.8)', 'Poor\n(0.4-0.6)', 'No Match\n(-?0.4)']
     counts = [excellent, good, poor, no_match]
     colors = ['green', 'orange', 'red', 'darkred']
     
     wedges, texts, autotexts = ax4.pie(counts, labels=categories, colors=colors, autopct='%1.1f%%',
                                       startangle=90, textprops={'fontsize': 10})
-    ax4.set_title('🎯 Match Quality Verteilung', fontsize=14, fontweight='bold')
+    ax4.set_title('?YZ? Match Quality Verteilung', fontsize=14, fontweight='bold')
     
     # Gesamt-Titel
     fig.suptitle(f'MTG Card Recognition - Similarity Search Statistiken ({total_searches} Bilder)', 
@@ -362,13 +379,13 @@ def create_summary_plot(match_scores: List[float], total_time: float,
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
-    print(f"📈 Statistik-Grafik gespeichert: {output_path}")
+    print(f"?Y"^ Statistik-Grafik gespeichert: {output_path}")
 
 
 def main():
     """
-    Hauptfunktion für Similarity-Search Testing
-    Kann direkt ohne Parameter ausgeführt werden - nutzt dann config.yaml
+    Hauptfunktion f-r Similarity-Search Testing
+    Kann direkt ohne Parameter ausgef-hrt werden - nutzt dann config.yaml
     """
     parser = argparse.ArgumentParser(description="MTG Card Recognition - Erkennung von Karten aus Pi Camera-Bildern")
     parser.add_argument("--config", "-c", type=str, default="config.yaml",
@@ -376,7 +393,7 @@ def main():
     parser.add_argument("--camera-dir", type=str, default=None,
                        help="Override: Verzeichnis mit Camera-Bildern")
     parser.add_argument("--output-dir", type=str, default=None,
-                       help="Override: Ausgabeverzeichnis für Ergebnisse")
+                       help="Override: Ausgabeverzeichnis f-r Ergebnisse")
     parser.add_argument("--model-path", type=str, default=None,
                        help="Override: Pfad zum trainierten Modell")
     
@@ -390,7 +407,7 @@ def main():
             output_dir=None,
             model_path=None
         )
-        print("🎮 Play-Button Modus: Nutze Standard-Parameter aus config.yaml")
+        print("?YZ? Play-Button Modus: Nutze Standard-Parameter aus config.yaml")
     else:
         args = parser.parse_args()
     
@@ -406,54 +423,57 @@ def main():
         # Device
         device = torch.device("cuda" if torch.cuda.is_available() and config['hardware']['use_cuda'] else "cpu")
         
-        print(f"🚀 MTG Card Similarity Search Testing")
-        print(f"🖥️  Device: {device.type.upper()}")
+        print(f"?Ys? MTG Card Similarity Search Testing")
+        print(f"?Y---  Device: {device.type.upper()}")
         if device.type == "cuda":
             print(f"   GPU: {torch.cuda.get_device_name()}")
-        print(f"📋 Config: {args.config}")
-        print(f"🔧 Modell: {model_path}")
-        print(f"📷 Camera-Bilder: {camera_dir}")
-        print(f"📁 Output: {output_dir}")
+        print(f"?Y"< Config: {args.config}")
+        print(f"?Y"? Modell: {model_path}")
+        print(f"?Y"? Camera-Bilder: {camera_dir}")
+        print(f"?Y"? Output: {output_dir}")
         
-        # Prüfungen
+        # Pr-fungen
         if not os.path.exists(model_path):
-            print(f"❌ Modell nicht gefunden: {model_path}")
-            print("   ➡️ Bitte zuerst Training durchführen mit train_triplet.py!")
+            print(f"-O Modell nicht gefunden: {model_path}")
+            print("   ?z-- Bitte zuerst Training durchf-hren mit train_triplet.py!")
             return
         
         if not os.path.exists(camera_dir):
-            print(f"❌ Camera-Verzeichnis nicht gefunden: {camera_dir}")
-            print(f"   ➡️ Erstelle Verzeichnis und kopiere Testbilder hinein!")
+            print(f"-O Camera-Verzeichnis nicht gefunden: {camera_dir}")
+            print(f"   ?z-- Erstelle Verzeichnis und kopiere Testbilder hinein!")
             os.makedirs(camera_dir, exist_ok=True)
-            print(f"   📁 Verzeichnis erstellt: {camera_dir}")
+            print(f"   ?Y"? Verzeichnis erstellt: {camera_dir}")
             return
         
-        # Database prüfen
+        # Database pr-fen
         db_path = config['database']['path']
         if not os.path.exists(db_path):
-            print(f"❌ Database nicht gefunden: {db_path}")
-            print("   ➡️ Bitte zuerst Embeddings generieren mit generate_embeddings.py!")
+            print(f"-O Database nicht gefunden: {db_path}")
+            print("   ?z-- Bitte zuerst Embeddings generieren mit generate_embeddings.py!")
             return
         
-        # Prüfe ob Camera-Bilder vorhanden
+        # Pr-fe ob Camera-Bilder vorhanden
         camera_images = list(Path(camera_dir).glob("*.jpg")) + list(Path(camera_dir).glob("*.jpeg")) + list(Path(camera_dir).glob("*.png"))
         if not camera_images:
-            print(f"❌ Keine Bilder im Camera-Verzeichnis gefunden: {camera_dir}")
-            print("   ➡️ Kopiere einige Testbilder ins Camera-Verzeichnis!")
+            print(f"-O Keine Bilder im Camera-Verzeichnis gefunden: {camera_dir}")
+            print("   ?z-- Kopiere einige Testbilder ins Camera-Verzeichnis!")
             return
             
-        print(f"📷 Gefunden: {len(camera_images)} Camera-Bilder")
+        print(f"?Y"? Gefunden: {len(camera_images)} Camera-Bilder")
         
         # Similarity-Search starten
         test_all_camera_images(config, model_path, camera_dir, output_dir, device)
         
     except Exception as e:
-        print(f"❌ Fehler: {e}")
-        print("\n💡 Verwendung:")
-        print("   🎮 Direkt mit Play-Button: nutzt config.yaml Parameter")
-        print("   🖥️  Mit Parametern: python src/cardscanner/recognize_cards.py --camera-dir data/camera_images")
+        print(f"-O Fehler: {e}")
+        print("\n?Y'? Verwendung:")
+        print("   ?YZ? Direkt mit Play-Button: nutzt config.yaml Parameter")
+        print("   ?Y---  Mit Parametern: python src/cardscanner/recognize_cards.py --camera-dir data/camera_images")
         parser.print_help()
 
 
 if __name__ == "__main__":
     main()
+
+
+

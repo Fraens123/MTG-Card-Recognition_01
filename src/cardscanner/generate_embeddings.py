@@ -20,7 +20,7 @@ from torchvision.transforms.functional import InterpolationMode
 
 
 def build_export_augmentation_transform() -> tv_transforms.Compose:
-    """Torch-basierte Augmentierung ähnlich der Trainingsvariante (aber leichter)."""
+    """Torch-basierte Augmentierung ??hnlich der Trainingsvariante (aber leichter)."""
     return tv_transforms.Compose(
         [
             tv_transforms.RandomApply(
@@ -37,12 +37,13 @@ def build_export_augmentation_transform() -> tv_transforms.Compose:
         ]
     )
 
-# PyTorch Dataset für parallele Embedding-Generierung
+# PyTorch Dataset f??r parallele Embedding-Generierung
 class CardAugmentDataset(data.Dataset):
     def __init__(
         self,
         image_files,
-        transform,
+        full_transform,
+        crop_transform,
         meta_parser,
         set_symbol_crop_cfg,
         num_variants: int,
@@ -50,7 +51,8 @@ class CardAugmentDataset(data.Dataset):
         enable_camera_aug: bool = False,
     ):
         self.image_files = image_files
-        self.transform = transform
+        self.full_transform = full_transform
+        self.crop_transform = crop_transform
         self.meta_parser = meta_parser
         self.set_symbol_crop_cfg = set_symbol_crop_cfg
         self.total_variants = max(num_variants, 1)
@@ -76,15 +78,15 @@ class CardAugmentDataset(data.Dataset):
                 aug_img = self.random_augment(img)
 
         # Pipeline entspricht dem Training: Bild -> (optional) Kamera-Augmentor -> Crop -> Resize/ToTensor/Normalize.
-        tensor_full = self.transform(aug_img)
+        tensor_full = self.full_transform(aug_img)
 
         # Set-Symbol-Crop (aus augmentiertem Bild)
         crop_img = crop_set_symbol(aug_img, self.set_symbol_crop_cfg)
-        tensor_crop = self.transform(crop_img)
+        tensor_crop = self.crop_transform(crop_img)
 
         import os
         meta = self.meta_parser(os.path.basename(img_path))
-        # Rückgabe: ((full, crop), pfad, meta)
+        # R??ckgabe: ((full, crop), pfad, meta)
         return (tensor_full, tensor_crop), str(img_path), meta
 
 
@@ -112,7 +114,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from src.cardscanner.augment_cards import CameraLikeAugmentor
 #!/usr/bin/env python3
 """
-Script zur Generierung von Embeddings für alle Karten mit dem trainierten Modell.
+Script zur Generierung von Embeddings f??r alle Karten mit dem trainierten Modell.
 Speichert Embeddings in JSON-Database.
 """
 
@@ -129,14 +131,14 @@ from PIL import Image
 import numpy as np
 from tqdm import tqdm
 
-# Absolute Imports für direkten Aufruf
+# Absolute Imports f??r direkten Aufruf
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from src.cardscanner.model import load_encoder
 from src.cardscanner.db import SimpleCardDB
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
-    """Lädt YAML-Konfiguration direkt"""
+    """L??dt YAML-Konfiguration direkt"""
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config-Datei nicht gefunden: {config_path}")
     
@@ -151,7 +153,7 @@ def load_config(config_path: str = "config.yaml") -> dict:
 
 def get_inference_transforms(resize_hw: tuple = (320, 224)) -> T.Compose:
     """
-    Transform-Pipeline für Inference (ohne Augmentierung). resize_hw = (H, W).
+    Transform-Pipeline f??r Inference (ohne Augmentierung). resize_hw = (H, W).
     """
     return build_resize_normalize_transform(resize_hw)
 
@@ -160,7 +162,7 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
                                      resize_hw: tuple, device: torch.device,
                                      backup_db: bool = True) -> Dict[str, any]:
     """
-    Generiert Embeddings für alle Bilder in einem Verzeichnis
+    Generiert Embeddings f??r alle Bilder in einem Verzeichnis
     """
     embed_dim = config['model']['embed_dim']
     print(f"[TOOL] Lade trainiertes Modell: {model_path} (embed_dim={embed_dim})")
@@ -179,40 +181,31 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
             shutil.copy2(db_path, backup_path)
             print(f"[SAVE] Database-Backup erstellt: {backup_path}")
     
-    # Neue Database erstellen (überschreibt die alte!)
+    # Neue Database erstellen (??berschreibt die alte!)
     db = SimpleCardDB()
 
-    # Transform für Inference
-    transform = get_inference_transforms(resize_hw)
+    # Transform f?r Inference
+    full_transform = get_inference_transforms(resize_hw)
     emb_export = config.get("embedding_export", {})
     use_original_mode = emb_export.get("use_original_mode", True)
     num_variants = max(int(emb_export.get("num_augmentations", 1)), 1)
     batch_size = emb_export.get("batch_size", 64)
     workers = emb_export.get("workers", 4)
-    aug_params = config.get("augmentation", {})
-    set_symbol_crop_cfg = get_set_symbol_crop_cfg(config)
+    aug_params = config.get("camera_augmentor", config.get("augmentation", {}))
+    set_symbol_crop_cfg = get_set_symbol_crop_cfg(config) or {}
+    crop_resize_hw = (set_symbol_crop_cfg.get("target_height", 64), set_symbol_crop_cfg.get("target_width", 160))
+    crop_transform = build_resize_normalize_transform(crop_resize_hw)
     camera_augmentor = None
     raw_camera_flag = emb_export.get("use_camera_augmentor", False)
     effective_camera_aug = raw_camera_flag and use_original_mode
     if effective_camera_aug:
-        camera_augmentor = CameraLikeAugmentor(
-            brightness_range=(aug_params.get("brightness_min", 0.9), aug_params.get("brightness_max", 1.3)),
-            contrast_range=(aug_params.get("contrast_min", 0.98), aug_params.get("contrast_max", 1.02)),
-            blur_range=(0.0, aug_params.get("blur_max", 3.2)),
-            noise_range=(0, aug_params.get("noise_max", 5.0)),
-            rotation_range=(-aug_params.get("rotation_max", 5.0), aug_params.get("rotation_max", 5.0)),
-            perspective=aug_params.get("perspective", 0.05),
-            shadow=aug_params.get("shadow", 0.14),
-            saturation_range=(aug_params.get("saturation_min", 0.8), aug_params.get("saturation_max", 1.2)),
-            color_temperature_range=(aug_params.get("color_temperature_min", 0.84), aug_params.get("color_temperature_max", 1.16)),
-            hue_shift_max=aug_params.get("hue_shift_max", 15.0),
-            background_color=aug_params.get("background_color", "white"),
-        )
+        camera_augmentor = CameraLikeAugmentor(**aug_params)
         print("[INFO] Embedding-Export nutzt CameraLikeAugmentor (Original-Modus).")
     else:
         if raw_camera_flag and not use_original_mode:
-            print("[INFO] Kamera-Augmentor im Vollmodus deaktiviert (Torch-Augmentierungen übernehmen).")
+            print("[INFO] Kamera-Augmentor im Vollmodus deaktiviert (Torch-Augmentierungen ?bernehmen).")
         print("[INFO] Embedding-Export ohne CameraLikeAugmentor (Torch-Augmentierungen + Resize).")
+
 
     # Alle Bilddateien finden
     image_files = []
@@ -220,7 +213,7 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
         image_files.extend(Path(images_dir).glob(ext))
 
     print(f"\n[INFO] Gefundene Kartenbilder: {len(image_files)}")
-    # Zähle eindeutige Karten
+    # Z??hle eindeutige Karten
     unique_cards = set()
     for img_file in image_files:
         meta = parse_scryfall_filename(img_file.name)
@@ -252,7 +245,8 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
 
     dataset = CardAugmentDataset(
         image_files,
-        transform,
+        full_transform,
+        crop_transform,
         parse_scryfall_filename,
         set_symbol_crop_cfg,
         num_variants,
@@ -387,7 +381,7 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
 
 def main():
     """
-    Hauptfunktion für Embedding-Generierung - alle Parameter aus config.yaml
+    Hauptfunktion f??r Embedding-Generierung - alle Parameter aus config.yaml
     """
     # Config laden
     try:
@@ -403,17 +397,17 @@ def main():
     # Embedding-Modus aus Config lesen
     embedding_mode = config['database'].get('embedding_mode', 'original')
     
-    # Bildverzeichnis basierend auf Modus wählen
+    # Bildverzeichnis basierend auf Modus w??hlen
     if embedding_mode == 'augmented':
         images_dir = config['data']['scryfall_augmented']
         print(f"[REFRESH] Modus: AUGMENTED - Mehr Variationen, langsamere Suche")
-        print(f"[STATS] Geschätzte Embeddings: ~1,600 (mehr Speicher, langsamere Suche)")
-        print(f"[WARN]  EXPERIMENTELLER MODUS: Nicht empfohlen - keine bessere Erkennungsqualität")
+        print(f"[STATS] Gesch??tzte Embeddings: ~1,600 (mehr Speicher, langsamere Suche)")
+        print(f"[WARN]  EXPERIMENTELLER MODUS: Nicht empfohlen - keine bessere Erkennungsqualit??t")
     else:
         images_dir = config['data']['scryfall_images']
         print(f"[FAST] Modus: ORIGINAL - Schneller, weniger Speicherbedarf (EMPFOHLEN)")
-        print(f"[STATS] Geschätzte Embeddings: ~400 (weniger Speicher, schnellere Suche)")
-        print(f"[OK] Tests zeigen identische Erkennungsqualität bei besserer Performance!")
+        print(f"[STATS] Gesch??tzte Embeddings: ~400 (weniger Speicher, schnellere Suche)")
+        print(f"[OK] Tests zeigen identische Erkennungsqualit??t bei besserer Performance!")
     
     backup_db = True  # Immer Backup erstellen
     
@@ -428,17 +422,17 @@ def main():
     if cuda_available and use_cuda:
         print(f"   GPU: {torch.cuda.get_device_name()}")
     elif cuda_available and not use_cuda:
-        print(f"   CUDA verfügbar, aber deaktiviert")
+        print(f"   CUDA verf??gbar, aber deaktiviert")
     else:
-        print(f"   CUDA nicht verfügbar")
+        print(f"   CUDA nicht verf??gbar")
     
     print(f"[DIR] Bilder-Verzeichnis: {images_dir}")
     print(f"[TOOL] Modell: {model_path}")
     
-    # Prüfungen
+    # Pr??fungen
     if not os.path.exists(model_path):
         print(f"[ERROR] Modell nicht gefunden: {model_path}")
-        print("   Bitte zuerst Training durchführen!")
+        print("   Bitte zuerst Training durchf??hren!")
         return
     
     if not os.path.exists(images_dir):
@@ -468,10 +462,11 @@ def main():
         if result['errors'] > 0:
             print(f"[WARN]  Fehler beim Parsen: {result['errors']} Dateien")
         print(f"[DISK] Database: {result['database_path']}")
-        print("->  Nächster Schritt: Kartenerkennung testen mit recognize_cards.py")
+        print("->  N??chster Schritt: Kartenerkennung testen mit recognize_cards.py")
     else:
         print(f"\n[ERROR] Embedding-Generierung fehlgeschlagen!")
 
 
 if __name__ == "__main__":
     main()
+

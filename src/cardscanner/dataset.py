@@ -1,73 +1,19 @@
-from PIL import Image
-from typing import Optional
-import torch
-
-# NEU: Set-Symbol-Crop-Funktion
-def crop_set_symbol(img: Image.Image, crop_cfg: Optional[dict] = None) -> Image.Image:
-    """
-    Schneidet das Set-Symbol aus dem Bild.
-    crop_cfg: dict mit Schlüsseln x_min, y_min, x_max, y_max (relativ 0..1).
-    Wenn crop_cfg None ist, wird config.yaml geladen.
-    """
-    if crop_cfg is None:
-        # Lazy load aus config.yaml
-        try:
-            with open("config.yaml", "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f)
-            crop_cfg = config.get("debug", {}).get("set_symbol_crop", None)
-        except Exception as e:
-            print(f"[WARN] crop_set_symbol: kann config.yaml nicht laden: {e}")
-            crop_cfg = None
-
-    if not crop_cfg:
-        # Fallback: gib Original zurück, damit nichts crasht
-        return img
-
-    x_min = float(crop_cfg.get("x_min", 0.7))
-    y_min = float(crop_cfg.get("y_min", 0.3))
-    x_max = float(crop_cfg.get("x_max", 0.95))
-    y_max = float(crop_cfg.get("y_max", 0.6))
-
-    w, h = img.size
-    left   = int(x_min * w)
-    top    = int(y_min * h)
-    right  = int(x_max * w)
-    bottom = int(y_max * h)
-
-    # Grenzen clampen
-    left   = max(0, min(left, w - 1))
-    right  = max(left + 1, min(right, w))
-    top    = max(0, min(top, h - 1))
-    bottom = max(top + 1, min(bottom, h))
-
-    return img.crop((left, top, right, bottom))
-
 from collections import OrderedDict
-
-# Picklebare LRUCache-Klasse für Bild-Caching
-class LRUCache(OrderedDict):
-    def __init__(self, max_size=1000):
-        super().__init__()
-        self.max_size = max_size
-    def __getitem__(self, key):
-        value = super().__getitem__(key)
-        self.move_to_end(key)
-        return value
-    def __setitem__(self, key, value):
-        super().__setitem__(key, value)
-        self.move_to_end(key)
-        if len(self) > self.max_size:
-            self.popitem(last=False)
-
-import yaml
-from src.cardscanner.augment_cards import CameraLikeAugmentor
 import os
 import random
 from typing import Dict, List, Tuple, Optional
+
+import torch
+import yaml
 from PIL import Image
 from torch.utils.data import Dataset
 import torchvision.transforms as T
 from torchvision.utils import save_image
+
+from src.cardscanner.augment_cards import CameraLikeAugmentor
+from src.cardscanner.image_pipeline import crop_set_symbol, get_set_symbol_crop_cfg, build_resize_normalize_transform
+
+
 
 _MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
 _STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
@@ -86,7 +32,7 @@ def parse_scryfall_filename(filename: str) -> Optional[Tuple[str, str, str, str]
     Parst Scryfall-Dateinamen in verschiedenen Formaten:
     Format 1: {set_code}_{collector_number}_{card_name}_{card_uuid} (z.B. 10E_31_Pacifism_686352f6.jpg)
     Format 2: {set_code}-{collector_number}-{card_name} (z.B. war-65-rescuer-sphinx.png)
-    Gibt zurück: (card_uuid, set_code, collector_number, card_name)
+    Gibt zur-ck: (card_uuid, set_code, collector_number, card_name)
     """
     name, _ = os.path.splitext(os.path.basename(filename))
 
@@ -109,8 +55,8 @@ def parse_scryfall_filename(filename: str) -> Optional[Tuple[str, str, str, str]
             card_uuid = f"{set_code}_{collector_number}_{hash(name) % 100000:05d}"
             return card_uuid, set_code, collector_number, card_name
 
-    # Robust: Wenn Format nicht passt, logge Warnung und gib None zurück
-    print(f"[WARN] parse_scryfall_filename: Unbekanntes Format für '{filename}'")
+    # Robust: Wenn Format nicht passt, logge Warnung und gib None zur-ck
+    print(f"[WARN] parse_scryfall_filename: Unbekanntes Format f-r '{filename}'")
     return None
 
 
@@ -121,6 +67,7 @@ class TripletImageDataset(Dataset):
         camera_dir: Optional[str],
         transform_anchor: T.Compose = None,
         transform_posneg: T.Compose = None,
+        transform_crop: T.Compose = None,
         seed: int = 42,
         use_camera_augmentor: bool = True,
         augmentor_params: dict = None,
@@ -130,8 +77,8 @@ class TripletImageDataset(Dataset):
         set_symbol_crop_cfg: Optional[dict] = None,
     ) -> None:
         """
-        Dataset für MTG-Karten Triplet Training.
-        Verwendet scryfall_dir als Quelle für augmentierte Bilder.
+        Dataset f-r MTG-Karten Triplet Training.
+        Verwendet scryfall_dir als Quelle f-r augmentierte Bilder.
         """
         random.seed(seed)
         self.scryfall_dir = scryfall_dir  # Verzeichnis mit Originalbildern
@@ -139,37 +86,31 @@ class TripletImageDataset(Dataset):
         self.transform_anchor = transform_anchor
         self.transform_posneg = transform_posneg
         self.use_camera_augmentor = use_camera_augmentor
+        self.transform_crop = transform_crop
 
         # Set-Symbol-Crop einmalig bestimmen, damit Training/Export identisch schneiden.
-        if set_symbol_crop_cfg is not None:
-            self.set_symbol_crop_cfg = set_symbol_crop_cfg
-        else:
+        self.set_symbol_crop_cfg = set_symbol_crop_cfg
+        if self.set_symbol_crop_cfg is None:
             try:
                 with open("config.yaml", "r", encoding="utf-8") as f:
-                    cfg = yaml.safe_load(f)
-                self.set_symbol_crop_cfg = cfg.get("debug", {}).get("set_symbol_crop", None)
+                    cfg = yaml.safe_load(f) or {}
+                self.set_symbol_crop_cfg = get_set_symbol_crop_cfg(cfg)
             except Exception as e:
                 print(f"[WARN] TripletImageDataset: config.yaml nicht lesbar: {e}")
                 self.set_symbol_crop_cfg = None
+        crop_target_h = 64
+        crop_target_w = 160
+        if self.set_symbol_crop_cfg:
+            crop_target_w = self.set_symbol_crop_cfg.get("target_width", crop_target_w)
+            crop_target_h = self.set_symbol_crop_cfg.get("target_height", crop_target_h)
+        if self.transform_crop is None:
+            self.transform_crop = build_resize_normalize_transform((crop_target_h, crop_target_w))
         if self.use_camera_augmentor:
             if augmentor_params is None:
-                # Lade Parameter aus config.yaml
                 with open("config.yaml", "r", encoding="utf-8") as f:
-                    config = yaml.safe_load(f)
-                augmentor_params = config.get("augmentation", {})
-            self.camera_augmentor = CameraLikeAugmentor(
-                brightness_range=(augmentor_params.get("brightness_min", 0.9), augmentor_params.get("brightness_max", 1.3)),
-                contrast_range=(augmentor_params.get("contrast_min", 0.98), augmentor_params.get("contrast_max", 1.02)),
-                blur_range=(0.0, augmentor_params.get("blur_max", 3.2)),
-                noise_range=(0, augmentor_params.get("noise_max", 5.0)),
-                rotation_range=(-augmentor_params.get("rotation_max", 5.0), augmentor_params.get("rotation_max", 5.0)),
-                perspective=augmentor_params.get("perspective", 0.05),
-                shadow=augmentor_params.get("shadow", 0.14),
-                saturation_range=(augmentor_params.get("saturation_min", 0.8), augmentor_params.get("saturation_max", 1.2)),
-                color_temperature_range=(augmentor_params.get("color_temperature_min", 0.84), augmentor_params.get("color_temperature_max", 1.16)),
-                hue_shift_max=augmentor_params.get("hue_shift_max", 15.0),
-                background_color=augmentor_params.get("background_color", "white"),
-            )
+                    config = yaml.safe_load(f) or {}
+                augmentor_params = config.get("camera_augmentor", config.get("augmentation", {}))
+            self.camera_augmentor = CameraLikeAugmentor(**augmentor_params)
         self.card_to_paths = {}
         if cache_images:
             self._image_cache = LRUCache(cache_max_size)
@@ -229,7 +170,7 @@ class TripletImageDataset(Dataset):
         # Basismenge = alle vorhandenen Bildpfade (Scryfall + Kamera)
         self.total_available_samples = len(self.all_paths)
         if self.total_available_samples == 0:
-            print("[WARN] TripletImageDataset: keine Trainingsbilder gefunden – Dataset bleibt leer.")
+            print("[WARN] TripletImageDataset: keine Trainingsbilder gefunden - Dataset bleibt leer.")
 
         print(f"Gefunden:")
         print(f"  - {len(self.card_ids)} eindeutige Karten")
@@ -241,7 +182,7 @@ class TripletImageDataset(Dataset):
     def save_augmentations_of_first_card(self, output_dir: str, n_aug: int = 20):
         """
         Erzeugt n_aug augmentierte Varianten der ersten Karte und speichert sie.
-        Zusätzlich werden dazugehörige Set-Symbol-Crops gespeichert.
+        Zus-tzlich werden dazugeh-rige Set-Symbol-Crops gespeichert.
         Struktur:
           output_dir/
             full/
@@ -265,7 +206,7 @@ class TripletImageDataset(Dataset):
         card_id = self.card_ids[0]
         img_path = self.card_to_paths[card_id][0]
         img = Image.open(img_path).convert("RGB")
-        print(f"Erzeuge {n_aug} Augmentierungen für Karte: {card_id} ({img_path})")
+        print(f"Erzeuge {n_aug} Augmentierungen f-r Karte: {card_id} ({img_path})")
 
         if self.use_camera_augmentor:
             augmentations = self.camera_augmentor.create_camera_like_augmentations(
@@ -287,20 +228,18 @@ class TripletImageDataset(Dataset):
                 full_path = os.path.join(full_dir, f"{card_id}_aug_{i:02d}.png")
                 save_image(_denormalize_for_save(aug_tensor), full_path)
 
-                # Einfacher Symbol-Crop aus Original (nicht 100% identisch zur Transform-Pipeline)
                 crop_img = crop_set_symbol(img, self.set_symbol_crop_cfg)
-                crop_tensor = self.transform_anchor(crop_img) if self.transform_anchor else T.ToTensor()(crop_img)
                 symbol_path = os.path.join(symbol_dir, f"{card_id}_aug_{i:02d}.png")
-                save_image(_denormalize_for_save(crop_tensor), symbol_path)
+                crop_img.save(symbol_path, "PNG")
 
         print(f"Augmentierungen gespeichert in: {output_dir}")
 
     def __len__(self) -> int:
         """
-        Basis-Länge = Anzahl der real vorhandenen Bildpfade (all_paths).
-        Über max_samples_per_epoch kann die effektive Länge gedeckelt werden,
+        Basis-L-nge = Anzahl der real vorhandenen Bildpfade (all_paths).
+        ?ober max_samples_per_epoch kann die effektive L-nge gedeckelt werden,
         damit der DataLoader weniger Triplets pro Epoche zieht,
-        während __getitem__ unverändert augmentiert.
+        w-hrend __getitem__ unver-ndert augmentiert.
         """
         if self.total_available_samples == 0:
             return 0
@@ -373,20 +312,20 @@ class TripletImageDataset(Dataset):
             n_full_t = T.ToTensor()(n_img)
 
         # NEU: Crops transformieren
-        if self.transform_posneg:
-            a_crop_t = self.transform_posneg(a_crop_img)
-            p_crop_t = self.transform_posneg(p_crop_img)
-            n_crop_t = self.transform_posneg(n_crop_img)
-        else:
-            a_crop_t = T.ToTensor()(a_crop_img)
-            p_crop_t = T.ToTensor()(p_crop_img)
-            n_crop_t = T.ToTensor()(n_crop_img)
+        crop_transform = self.transform_crop or T.Compose([T.ToTensor()])
+        a_crop_t = crop_transform(a_crop_img)
+        p_crop_t = crop_transform(p_crop_img)
+        n_crop_t = crop_transform(n_crop_img)
 
         label = self.card_to_idx[pos_uuid]
 
-        # NEU: Vollbild + Crop pro Anchor/Pos/Neg zurückgeben
+        # NEU: Vollbild + Crop pro Anchor/Pos/Neg zur-ckgeben
         return a_full_t, a_crop_t, p_full_t, p_crop_t, n_full_t, n_crop_t, label
 
     @property
     def num_classes(self) -> int:
         return len(self.card_ids)
+
+
+
+

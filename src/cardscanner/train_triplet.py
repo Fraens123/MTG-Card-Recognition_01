@@ -21,7 +21,11 @@ from tqdm import tqdm
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from src.cardscanner.model import Encoder, save_encoder
 from src.cardscanner.dataset import TripletImageDataset
-from src.cardscanner.image_pipeline import build_resize_normalize_transform, detect_image_size
+from src.cardscanner.image_pipeline import (
+    build_resize_normalize_transform,
+    detect_image_size,
+    get_set_symbol_crop_cfg,
+)
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -37,7 +41,7 @@ def load_config(config_path: str = "config.yaml") -> dict:
 def get_transforms(resize_hw: Tuple[int, int], variant: str = "full") -> Tuple[T.Compose, T.Compose]:
     """
     Liefert zwei Pipelines:
-    - anchor_transform: darf stärker augmentieren (Rotation/Blur etc.).
+    - anchor_transform: darf st??rker augmentieren (Rotation/Blur etc.).
     - base_transform: nur Resize + Norm, um CPU/RAM zu schonen.
     """
     base_transform = build_resize_normalize_transform(resize_hw)
@@ -80,7 +84,7 @@ def get_transforms(resize_hw: Tuple[int, int], variant: str = "full") -> Tuple[T
 
 def save_feature_maps(feature_tensor: torch.Tensor, out_dir: str, max_channels: int = 16):
     """
-    Speichert bis zu max_channels einzelne Feature-Maps unverändert in Originalauflösung.
+    Speichert bis zu max_channels einzelne Feature-Maps unver??ndert in Originalaufl??sung.
     """
     os.makedirs(out_dir, exist_ok=True)
     fmap = feature_tensor[0]
@@ -96,7 +100,7 @@ def save_feature_maps(feature_tensor: torch.Tensor, out_dir: str, max_channels: 
         nd = (ch_norm.numpy() * 255).astype("uint8")
         img = Image.fromarray(nd, mode="L")
         img.save(os.path.join(out_dir, f"ch_{i:03d}.png"))
-    print(f"[DEBUG] Featuremaps gespeichert: {out_dir} ({c} Kanäle)")
+    print(f"[DEBUG] Featuremaps gespeichert: {out_dir} ({c} Kan??le)")
 
 
 def save_feature_maps_for_preview(model: nn.Module,
@@ -108,11 +112,11 @@ def save_feature_maps_for_preview(model: nn.Module,
     full_dir = os.path.join(preview_dir, "full")
     symbol_dir = os.path.join(preview_dir, "symbol")
     if not os.path.isdir(full_dir):
-        print("[DEBUG] Kein full/-Ordner im preview_dir – Featuremaps werden übersprungen.")
+        print("[DEBUG] Kein full/-Ordner im preview_dir ??" Featuremaps werden ??bersprungen.")
         return
     full_files = sorted([f for f in os.listdir(full_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
     if not full_files:
-        print("[DEBUG] Keine Preview-Bilder gefunden – Featuremaps werden übersprungen.")
+        print("[DEBUG] Keine Preview-Bilder gefunden ??" Featuremaps werden ??bersprungen.")
         return
     full_path = os.path.join(full_dir, full_files[0])
     symbol_path = None
@@ -233,6 +237,13 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
     resize_hw = (target_height, target_width)
     print(f"[INFO] Training resize (W x H): {target_width}x{target_height}")
 
+    crop_cfg = get_set_symbol_crop_cfg(config) or {}
+    crop_resize_hw = (
+        crop_cfg.get("target_height", 64),
+        crop_cfg.get("target_width", 160),
+    )
+    crop_transform = build_resize_normalize_transform(crop_resize_hw)
+
     transform_variant = training_cfg.get("transform_variant", "full")
     print(f"[INFO] Transform-Variante: {transform_variant}")
     aug_anchor, base = get_transforms(resize_hw, variant=transform_variant)
@@ -240,7 +251,7 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
     cache_images = training_cfg.get("cache_images", True)
     cache_max_size = training_cfg.get("cache_max_size", 1000)
 
-    # Es werden ausschließlich die Scryfall-Bilder verwendet – Kamera-Fotos bleiben außen vor.
+    # Es werden ausschlie?Ylich die Scryfall-Bilder verwendet ??" Kamera-Fotos bleiben au?Yen vor.
     dataset_camera_dir = None
     if camera_dir:
         print("[INFO] Kamera-Bilder werden ignoriert (nur Scryfall-Daten erlaubt).")
@@ -254,7 +265,7 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
         print("[INFO] max_samples_per_epoch: full dataset")
     use_camera_augmentor = training_cfg.get("use_camera_augmentor", True)
     if not use_camera_augmentor:
-        print("[INFO] Kamera-Augmentor deaktiviert – es laufen nur die Torch-Transforms.")
+        print("[INFO] Kamera-Augmentor deaktiviert ??" es laufen nur die Torch-Transforms.")
 
     dataset = TripletImageDataset(
         images_dir,
@@ -263,19 +274,20 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
         base,
         seed=training_cfg.get("seed", 42),
         use_camera_augmentor=use_camera_augmentor,
-        augmentor_params=config.get("augmentation", {}),
+        augmentor_params=config.get("camera_augmentor", config.get("augmentation", {})),
         cache_images=cache_images,
         cache_max_size=cache_max_size,
         max_samples_per_epoch=max_samples,
-        set_symbol_crop_cfg=config.get("debug", {}).get("set_symbol_crop"),
+        transform_crop=crop_transform,
+        set_symbol_crop_cfg=crop_cfg,
     )
 
     print(f"\n[INFO] Trainingsdaten: {len(dataset.card_ids)} Karten (Scryfall)")
-    print(f"[INFO] Verfügbare Einzelbilder: {dataset.total_available_samples}")
+    print(f"[INFO] Verf??gbare Einzelbilder: {dataset.total_available_samples}")
     if max_samples:
-        print(f"[INFO] Effektive Dataset-Länge pro Epoche: {len(dataset)} (Limit {max_samples})")
+        print(f"[INFO] Effektive Dataset-L??nge pro Epoche: {len(dataset)} (Limit {max_samples})")
     else:
-        print(f"[INFO] Effektive Dataset-Länge pro Epoche: {len(dataset)} (alle verfügbaren Samples)")
+        print(f"[INFO] Effektive Dataset-L??nge pro Epoche: {len(dataset)} (alle verf??gbaren Samples)")
 
     debug_preview_dir = debug_cfg.get("augmentation_preview_dir")
     featuremap_dir = debug_cfg.get("featuremap_preview_dir")
@@ -329,6 +341,17 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
         num_classes=dataset.num_classes,
         pretrained=True,
     ).to(device)
+
+    weight_path = model_cfg.get("weights_path")
+    if training_cfg.get("load_pretrained_weights", True) and weight_path and os.path.exists(weight_path):
+        try:
+            state = torch.load(weight_path, map_location=device)
+            missing = model.load_state_dict(state, strict=False)
+            print(f"[INFO] Vortrainierte Gewichte geladen: {weight_path}")
+            if missing.missing_keys:
+                print(f"[WARN] Fehlende Keys beim Laden: {missing.missing_keys}")
+        except Exception as exc:
+            print(f"[WARN] Konnte Gewichte nicht laden ({weight_path}): {exc}")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=training_cfg["learning_rate"])
     triplet_loss_fn = nn.TripletMarginWithDistanceLoss(
@@ -552,3 +575,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

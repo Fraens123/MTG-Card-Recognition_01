@@ -12,7 +12,7 @@ DEFAULT_STD = [0.229, 0.224, 0.225]
 
 def detect_image_size(images_dir: str, max_dim: int = 400) -> Tuple[int, int]:
     """
-    Ermittelt eine sinnvolle Zielgröße basierend auf den vorhandenen Bildern.
+    Ermittelt eine sinnvolle Zielgr???Ye basierend auf den vorhandenen Bildern.
     Skaliert das erste gefundene Bild auf max_dim und rundet auf Vielfache von 8.
     """
     images_path = Path(images_dir)
@@ -51,13 +51,18 @@ def build_resize_normalize_transform(resize_hw: Tuple[int, int]) -> T.Compose:
 
 
 def get_set_symbol_crop_cfg(config: Dict) -> Optional[Dict]:
-    """Extrahiert die Set-Symbol-Crop-Konfiguration aus config.yaml."""
-    return config.get("debug", {}).get("set_symbol_crop")
+    """Extrahiert die Set-Symbol-Crop-Konfiguration inkl. Defaults."""
+    cfg = config.get("debug", {}).get("set_symbol_crop")
+    if not cfg:
+        return None
+    defaults = {"target_width": 160, "target_height": 64, "keep_aspect": True}
+    merged = defaults | cfg
+    return merged
 
 
 def resolve_resize_hw(config: Dict, sample_dir: Optional[str] = None) -> Tuple[int, int]:
     """
-    Liefert (height, width) für die Resize-Pipeline.
+    Liefert (height, width) f??r die Resize-Pipeline.
     Nutzt training.auto_detect_size, andernfalls target_width/height.
     """
     training_cfg = config.get("training", {})
@@ -69,3 +74,45 @@ def resolve_resize_hw(config: Dict, sample_dir: Optional[str] = None) -> Tuple[i
         width = training_cfg.get("target_width", 224)
         height = training_cfg.get("target_height", 320)
     return height, width
+
+
+def crop_set_symbol(img: Image.Image, crop_cfg: Optional[Dict]) -> Image.Image:
+    """
+    Schneidet das Set-Symbol aus dem Originalbild und bringt es ohne Verzerrung
+    auf die gew??nschte Zielgr???Ye (Letterbox + isotrope Skalierung).
+    """
+    if not crop_cfg:
+        return img
+
+    w, h = img.size
+    x0 = int(crop_cfg.get("x_min", 0.7) * w)
+    y0 = int(crop_cfg.get("y_min", 0.3) * h)
+    x1 = int(crop_cfg.get("x_max", 0.95) * w)
+    y1 = int(crop_cfg.get("y_max", 0.6) * h)
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(w, x1), min(h, y1)
+    if x1 <= x0 or y1 <= y0:
+        return img
+
+    crop = img.crop((x0, y0, x1, y1))
+    target_w = int(crop_cfg.get("target_width", 160))
+    target_h = int(crop_cfg.get("target_height", 64))
+    keep_aspect = crop_cfg.get("keep_aspect", True)
+
+    if not keep_aspect:
+        return crop.resize((target_w, target_h), Image.BILINEAR)
+
+    crop_w, crop_h = crop.size
+    if crop_w == 0 or crop_h == 0:
+        return crop
+    scale = min(target_w / crop_w, target_h / crop_h)
+    new_w = max(1, int(round(crop_w * scale)))
+    new_h = max(1, int(round(crop_h * scale)))
+    resized = crop.resize((new_w, new_h), Image.BILINEAR)
+
+    canvas = Image.new("RGB", (target_w, target_h), color=(0, 0, 0))
+    offset_x = (target_w - new_w) // 2
+    offset_y = (target_h - new_h) // 2
+    canvas.paste(resized, (offset_x, offset_y))
+    return canvas
+
