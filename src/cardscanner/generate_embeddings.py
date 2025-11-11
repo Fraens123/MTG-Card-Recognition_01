@@ -6,39 +6,74 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.cardscanner.dataset import parse_scryfall_filename, crop_set_symbol
 import torch.utils.data as data
+
+from src.cardscanner.dataset import parse_scryfall_filename, crop_set_symbol
+from src.cardscanner.embedding_utils import build_card_embedding
+from src.cardscanner.image_pipeline import (
+    build_resize_normalize_transform,
+    get_set_symbol_crop_cfg,
+    resolve_resize_hw,
+)
+from torchvision import transforms as tv_transforms
+
+
+def build_export_augmentation_transform() -> tv_transforms.Compose:
+    """Torch-basierte Augmentierung ähnlich der Trainingsvariante (aber leichter)."""
+    return tv_transforms.Compose(
+        [
+            tv_transforms.RandomApply(
+                [tv_transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.1, hue=0.02)],
+                p=0.8,
+            ),
+            tv_transforms.RandomApply([tv_transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.7))], p=0.3),
+            tv_transforms.RandomRotation(2, fill=0),
+        ]
+    )
 
 # PyTorch Dataset für parallele Embedding-Generierung
 class CardAugmentDataset(data.Dataset):
-    def __init__(self, image_files, augmentor, num_augmentations, transform, meta_parser):
+    def __init__(
+        self,
+        image_files,
+        transform,
+        meta_parser,
+        set_symbol_crop_cfg,
+        num_variants: int,
+        camera_augmentor=None,
+        enable_camera_aug: bool = False,
+    ):
         self.image_files = image_files
-        self.augmentor = augmentor
-        self.num_augmentations = num_augmentations
         self.transform = transform
         self.meta_parser = meta_parser
+        self.set_symbol_crop_cfg = set_symbol_crop_cfg
+        self.total_variants = max(num_variants, 1)
+        self.camera_augmentor = camera_augmentor
+        self.use_camera_augmentor = bool(enable_camera_aug and camera_augmentor is not None)
+        self.random_augment = build_export_augmentation_transform()
         self.samples = []
-        # Erzeuge Sample-Liste: (img_path, aug_idx)
         for img_path in self.image_files:
-            for aug_idx in range(num_augmentations + 1):
-                self.samples.append((img_path, aug_idx))
+            for variant_idx in range(self.total_variants):
+                self.samples.append((img_path, variant_idx))
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        img_path, aug_idx = self.samples[idx]
-        img = Image.open(img_path).convert('RGB')
-        if aug_idx == 0:
-            aug_img = img
-        else:
-            aug_img = self.augmentor.create_camera_like_augmentations(img, 1)[-1]
+        img_path, variant_idx = self.samples[idx]
+        img = Image.open(img_path).convert("RGB")
+        aug_img = img
+        if variant_idx > 0:
+            if self.use_camera_augmentor:
+                aug_img = self.camera_augmentor.create_camera_like_augmentations(img, 1)[-1]
+            else:
+                aug_img = self.random_augment(img)
 
-        # Vollbild-Tensor
+        # Pipeline entspricht dem Training: Bild -> (optional) Kamera-Augmentor -> Crop -> Resize/ToTensor/Normalize.
         tensor_full = self.transform(aug_img)
 
         # Set-Symbol-Crop (aus augmentiertem Bild)
-        crop_img = crop_set_symbol(aug_img, None)
+        crop_img = crop_set_symbol(aug_img, self.set_symbol_crop_cfg)
         tensor_crop = self.transform(crop_img)
 
         import os
@@ -92,7 +127,6 @@ from tqdm import tqdm
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from src.cardscanner.model import load_encoder
 from src.cardscanner.db import SimpleCardDB
-from src.cardscanner.dataset import parse_scryfall_filename
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -113,11 +147,7 @@ def get_inference_transforms(resize_hw: tuple = (320, 224)) -> T.Compose:
     """
     Transform-Pipeline für Inference (ohne Augmentierung). resize_hw = (H, W).
     """
-    return T.Compose([
-        T.Resize(resize_hw, antialias=True),
-        T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-    ])
+    return build_resize_normalize_transform(resize_hw)
 
 
 def generate_embeddings_from_directory(config: dict, model_path: str, images_dir: str, 
@@ -127,12 +157,12 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
     Generiert Embeddings für alle Bilder in einem Verzeichnis
     """
     embed_dim = config['model']['embed_dim']
-    print(f"🔧 Lade trainiertes Modell: {model_path} (embed_dim={embed_dim})")
+    print(f"[TOOL] Lade trainiertes Modell: {model_path} (embed_dim={embed_dim})")
     model = load_encoder(model_path, embed_dim=embed_dim, device=device)
     model.eval()
     model.to(device)
     
-    print(f"📂 Verarbeite Bilder aus: {images_dir}")
+    print(f"[DIR] Verarbeite Bilder aus: {images_dir}")
     
     # Backup der bestehenden Database
     if backup_db:
@@ -141,7 +171,7 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
         if os.path.exists(db_path):
             backup_path = f"{db_path}.backup"
             shutil.copy2(db_path, backup_path)
-            print(f"💾 Database-Backup erstellt: {backup_path}")
+            print(f"[SAVE] Database-Backup erstellt: {backup_path}")
     
     # Neue Database erstellen (überschreibt die alte!)
     db = SimpleCardDB()
@@ -149,23 +179,34 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
     # Transform für Inference
     transform = get_inference_transforms(resize_hw)
     emb_export = config.get("embedding_export", {})
-    num_augmentations = emb_export.get("num_augmentations", 20)
+    use_original_mode = emb_export.get("use_original_mode", True)
+    num_variants = max(int(emb_export.get("num_augmentations", 1)), 1)
     batch_size = emb_export.get("batch_size", 64)
     workers = emb_export.get("workers", 4)
     aug_params = config.get("augmentation", {})
-    camera_augmentor = CameraLikeAugmentor(
-        brightness_range=(aug_params.get("brightness_min", 0.9), aug_params.get("brightness_max", 1.3)),
-        contrast_range=(aug_params.get("contrast_min", 0.98), aug_params.get("contrast_max", 1.02)),
-        blur_range=(0.0, aug_params.get("blur_max", 3.2)),
-        noise_range=(0, aug_params.get("noise_max", 5.0)),
-        rotation_range=(-aug_params.get("rotation_max", 5.0), aug_params.get("rotation_max", 5.0)),
-        perspective=aug_params.get("perspective", 0.05),
-        shadow=aug_params.get("shadow", 0.14),
-        saturation_range=(aug_params.get("saturation_min", 0.8), aug_params.get("saturation_max", 1.2)),
-        color_temperature_range=(aug_params.get("color_temperature_min", 0.84), aug_params.get("color_temperature_max", 1.16)),
-        hue_shift_max=aug_params.get("hue_shift_max", 15.0),
-        background_color=aug_params.get("background_color", "white"),
-    )
+    set_symbol_crop_cfg = get_set_symbol_crop_cfg(config)
+    camera_augmentor = None
+    raw_camera_flag = emb_export.get("use_camera_augmentor", False)
+    effective_camera_aug = raw_camera_flag and use_original_mode
+    if effective_camera_aug:
+        camera_augmentor = CameraLikeAugmentor(
+            brightness_range=(aug_params.get("brightness_min", 0.9), aug_params.get("brightness_max", 1.3)),
+            contrast_range=(aug_params.get("contrast_min", 0.98), aug_params.get("contrast_max", 1.02)),
+            blur_range=(0.0, aug_params.get("blur_max", 3.2)),
+            noise_range=(0, aug_params.get("noise_max", 5.0)),
+            rotation_range=(-aug_params.get("rotation_max", 5.0), aug_params.get("rotation_max", 5.0)),
+            perspective=aug_params.get("perspective", 0.05),
+            shadow=aug_params.get("shadow", 0.14),
+            saturation_range=(aug_params.get("saturation_min", 0.8), aug_params.get("saturation_max", 1.2)),
+            color_temperature_range=(aug_params.get("color_temperature_min", 0.84), aug_params.get("color_temperature_max", 1.16)),
+            hue_shift_max=aug_params.get("hue_shift_max", 15.0),
+            background_color=aug_params.get("background_color", "white"),
+        )
+        print("[INFO] Embedding-Export nutzt CameraLikeAugmentor (Original-Modus).")
+    else:
+        if raw_camera_flag and not use_original_mode:
+            print("[INFO] Kamera-Augmentor im Vollmodus deaktiviert (Torch-Augmentierungen übernehmen).")
+        print("[INFO] Embedding-Export ohne CameraLikeAugmentor (Torch-Augmentierungen + Resize).")
 
     # Alle Bilddateien finden
     image_files = []
@@ -181,8 +222,14 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
             card_uuid, set_code, collector_number, card_name = meta
             unique_cards.add(f"{set_code}_{collector_number}_{card_name}")
     print(f"[INFO] Eindeutige Karten: {len(unique_cards)}")
-    print(f"[INFO] Embeddings/Centroids pro Karte (max): {config['database'].get('n_centroids', 12)}")
-    print(f"[INFO] Erwartete Gesamtzahl Centroids: {len(unique_cards) * config['database'].get('n_centroids', 12)}")
+    if use_original_mode:
+        max_centroids = config["database"].get("n_centroids", 12)
+        print(f"[INFO] Export-Modus: Original -> KMeans (max {max_centroids} Centroids pro Karte)")
+        print(f"[INFO] Erwartete Gesamtzahl Centroids: {len(unique_cards) * max_centroids}")
+    else:
+        expected_embeddings = len(unique_cards) * num_variants
+        print(f"[INFO] Export-Modus: Voll -> {num_variants} Augmentierungen pro Karte")
+        print(f"[INFO] Erwartete Gesamtzahl Embeddings: {expected_embeddings}")
 
     if not image_files:
         print(f"[WARN] Keine Bilder gefunden in: {images_dir}")
@@ -197,7 +244,15 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
     card_meta = dict()
     errors = 0
 
-    dataset = CardAugmentDataset(image_files, camera_augmentor, num_augmentations, transform, parse_scryfall_filename)
+    dataset = CardAugmentDataset(
+        image_files,
+        transform,
+        parse_scryfall_filename,
+        set_symbol_crop_cfg,
+        num_variants,
+        camera_augmentor=camera_augmentor,
+        enable_camera_aug=effective_camera_aug,
+    )
     loader = data.DataLoader(
         dataset,
         batch_size=batch_size,
@@ -211,22 +266,13 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
             batch_full = batch_full.to(device, non_blocking=True)
             batch_crop = batch_crop.to(device, non_blocking=True)
             with torch.no_grad():
-                emb_full = model(batch_full)
-                emb_full = nn.functional.normalize(emb_full, p=2, dim=-1)
-
-                emb_crop = model(batch_crop)
-                emb_crop = nn.functional.normalize(emb_crop, p=2, dim=-1)
-
-                # Concat Full + Crop, dann nochmal normalisieren
-                embeddings = torch.cat([emb_full, emb_crop], dim=-1)
-                embeddings = nn.functional.normalize(embeddings, p=2, dim=-1)
-
+                embeddings = build_card_embedding(model, batch_full, batch_crop)
                 embeddings_np = embeddings.cpu().numpy()
 
             for i, embedding_np in enumerate(embeddings_np):
                 meta = metas[i]
                 if not meta or len(meta) != 4:
-                    print(f"⚠️  Kann nicht parsen: {img_paths[i]}")
+                    print(f"[WARN]  Kann nicht parsen: {img_paths[i]}")
                     errors += 1
                     continue
                 card_uuid, set_code, collector_number, card_name = meta
@@ -234,71 +280,103 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
                 card_meta[unique_id] = (card_uuid, set_code, collector_number, card_name, img_paths[i])
                 card_embeddings[unique_id].append(embedding_np)
         except Exception as e:
-            print(f"❌ Fehler im Batch: {e}")
+            print(f"[ERROR] Fehler im Batch: {e}")
             errors += 1
             continue
 
-    # K-Means-Centroids berechnen und speichern (unverändert, aber mit neuen card_embeddings/card_meta)
-    from sklearn.cluster import KMeans
-    n_centroids = int(config["database"].get("n_centroids", 12))
-    single_cluster_cards = 0
-    multi_cluster_cards = 0
-    for unique_id, emb_list in card_embeddings.items():
-        if unique_id not in card_meta:
-            print(f"[WARN] Keine Metadaten für {unique_id}")
-            continue
-        card_uuid, set_code, collector_number, card_name, img_file = card_meta[unique_id]
-        display_name = f"{card_name.replace('_', ' ')} ({set_code})"
-        vectors = np.stack(emb_list)
-        if len(emb_list) < max(3, n_centroids):
-            centroid = np.mean(vectors, axis=0)
-            centroid = centroid / (np.linalg.norm(centroid) + 1e-12)
-            db.add_card(
-                card_uuid=card_uuid,
-                name=display_name,
-                set_code=set_code,
-                collector_number=collector_number,
-                image_path=str(img_file),
-                embedding=centroid
-            )
-            single_cluster_cards += 1
-        else:
-            kmeans = KMeans(n_clusters=n_centroids, random_state=42, n_init='auto')
-            kmeans.fit(vectors)
-            centroids = kmeans.cluster_centers_
-            centroids = centroids / (np.linalg.norm(centroids, axis=1, keepdims=True) + 1e-12)
-            for i, centroid in enumerate(centroids):
+    if use_original_mode:
+        from sklearn.cluster import KMeans
+        n_centroids = int(config["database"].get("n_centroids", 12))
+        single_cluster_cards = 0
+        multi_cluster_cards = 0
+        for unique_id, emb_list in card_embeddings.items():
+            if unique_id not in card_meta:
+                print(f"[WARN] Keine Metadaten fOr {unique_id}")
+                continue
+            card_uuid, set_code, collector_number, card_name, img_file = card_meta[unique_id]
+            display_name = f"{card_name.replace('_', ' ')} ({set_code})"
+            vectors = np.stack(emb_list)
+            if len(emb_list) < max(3, n_centroids):
+                centroid = np.mean(vectors, axis=0)
+                centroid = centroid / (np.linalg.norm(centroid) + 1e-12)
                 db.add_card(
-                    card_uuid=f"{card_uuid}_c{i}",
+                    card_uuid=card_uuid,
                     name=display_name,
                     set_code=set_code,
                     collector_number=collector_number,
                     image_path=str(img_file),
-                    embedding=centroid
+                    embedding=centroid,
                 )
-            multi_cluster_cards += 1
+                single_cluster_cards += 1
+            else:
+                kmeans = KMeans(n_clusters=n_centroids, random_state=42, n_init='auto')
+                kmeans.fit(vectors)
+                centroids = kmeans.cluster_centers_
+                centroids = centroids / (np.linalg.norm(centroids, axis=1, keepdims=True) + 1e-12)
+                for i, centroid in enumerate(centroids):
+                    db.add_card(
+                        card_uuid=f"{card_uuid}_c{i}",
+                        name=display_name,
+                        set_code=set_code,
+                        collector_number=collector_number,
+                        image_path=str(img_file),
+                        embedding=centroid,
+                    )
+                multi_cluster_cards += 1
+
+        db.save_to_file()
+        print("\n[OK] Embedding-Generierung abgeschlossen!")
+        total_centroids = sum(n_centroids if len(v) >= n_centroids else 1 for v in card_embeddings.values())
+        print(f"[INFO] Generiert: {total_centroids} Centroids")
+        print(f"[INFO] Fehler: {errors}")
+        print(f"[INFO] Database gespeichert: {db.db_path}")
+        total_datapoints = sum(len(embeddings) for embeddings in card_embeddings.values())
+        total_clusters = sum(n_centroids if len(embeddings) >= n_centroids else 1 for embeddings in card_embeddings.values())
+        print(f"[INFO] Embedding-Export abgeschlossen.")
+        print(f"[INFO] Erzeugte Cluster (Centroids): {total_clusters}")
+        print(f"[INFO] Gesamtzahl der Embedding-Datenpunkte: {total_datapoints}")
+        print(f"[INFO] Karten mit 1 Cluster (<{n_centroids} Embeddings): {single_cluster_cards}")
+        print(f"[INFO] Karten mit {n_centroids} Clustern: {multi_cluster_cards}")
+        return {
+            'embeddings_generated': total_centroids,
+            'errors': errors,
+            'database_path': str(db.db_path),
+        }
+
+    saved_embeddings = 0
+    cards_with_multiple = 0
+    for unique_id, emb_list in card_embeddings.items():
+        if unique_id not in card_meta:
+            print(f"[WARN] Keine Metadaten fOr {unique_id}")
+            continue
+        card_uuid, set_code, collector_number, card_name, img_file = card_meta[unique_id]
+        display_name = f"{card_name.replace('_', ' ')} ({set_code})"
+        vectors = np.stack(emb_list)
+        if len(emb_list) > 1:
+            cards_with_multiple += 1
+        for i, vector in enumerate(vectors):
+            db.add_card(
+                card_uuid=f"{card_uuid}_a{i}",
+                name=display_name,
+                set_code=set_code,
+                collector_number=collector_number,
+                image_path=str(img_file),
+                embedding=vector,
+            )
+        saved_embeddings += len(emb_list)
 
     db.save_to_file()
-    
-    print(f"\n✅ Embedding-Generierung abgeschlossen!")
-    total_centroids = sum(n_centroids if len(v) >= n_centroids else 1 for v in card_embeddings.values())
-    print(f"📊 Generiert: {total_centroids} Centroids")
-    print(f"❌ Fehler: {errors}")
-    print(f"💾 Database gespeichert: {db.db_path}")
-    # Statistik-Ausgabe
-    total_datapoints = sum(len(embeddings) for embeddings in card_embeddings.values())
-    total_clusters = sum(n_centroids if len(embeddings) >= n_centroids else 1 for embeddings in card_embeddings.values())
-    print(f"[INFO] Embedding-Export abgeschlossen.")
-    print(f"[INFO] Erzeugte Cluster (Centroids): {total_clusters}")
-    print(f"[INFO] Gesamtzahl der Embedding-Datenpunkte: {total_datapoints}")
-    print(f"[INFO] Karten mit 1 Cluster (<{n_centroids} Embeddings): {single_cluster_cards}")
-    print(f"[INFO] Karten mit {n_centroids} Clustern: {multi_cluster_cards}")
-    
+    print("\n[OK] Embedding-Generierung abgeschlossen!")
+    print(f"[INFO] Gespeicherte Embeddings: {saved_embeddings}")
+    print(f"[INFO] Karten mit >1 Embedding: {cards_with_multiple}")
+    print(f"[INFO] Fehler: {errors}")
+    print(f"[INFO] Database gespeichert: {db.db_path}")
     return {
-        'embeddings_generated': total_centroids,
+        'embeddings_generated': saved_embeddings,
         'errors': errors,
-        'database_path': str(db.db_path)
+        'database_path': str(db.db_path),
     }
+
 
 
 def main():
@@ -308,9 +386,9 @@ def main():
     # Config laden
     try:
         config = load_config("config.yaml")
-        print(f"📋 Config geladen aus: config.yaml")
+        print("Config geladen aus: config.yaml")
     except Exception as e:
-        print(f"❌ Fehler beim Laden der Config: {e}")
+        print(f"[ERROR] Fehler beim Laden der Config: {e}")
         return
     
     # Parameter aus Config
@@ -322,14 +400,14 @@ def main():
     # Bildverzeichnis basierend auf Modus wählen
     if embedding_mode == 'augmented':
         images_dir = config['data']['scryfall_augmented']
-        print(f"🔄 Modus: AUGMENTED - Mehr Variationen, langsamere Suche")
-        print(f"📊 Geschätzte Embeddings: ~1,600 (mehr Speicher, langsamere Suche)")
-        print(f"⚠️  EXPERIMENTELLER MODUS: Nicht empfohlen - keine bessere Erkennungsqualität")
+        print(f"[REFRESH] Modus: AUGMENTED - Mehr Variationen, langsamere Suche")
+        print(f"[STATS] Geschätzte Embeddings: ~1,600 (mehr Speicher, langsamere Suche)")
+        print(f"[WARN]  EXPERIMENTELLER MODUS: Nicht empfohlen - keine bessere Erkennungsqualität")
     else:
         images_dir = config['data']['scryfall_images']
-        print(f"⚡ Modus: ORIGINAL - Schneller, weniger Speicherbedarf (EMPFOHLEN)")
-        print(f"📊 Geschätzte Embeddings: ~400 (weniger Speicher, schnellere Suche)")
-        print(f"✅ Tests zeigen identische Erkennungsqualität bei besserer Performance!")
+        print(f"[FAST] Modus: ORIGINAL - Schneller, weniger Speicherbedarf (EMPFOHLEN)")
+        print(f"[STATS] Geschätzte Embeddings: ~400 (weniger Speicher, schnellere Suche)")
+        print(f"[OK] Tests zeigen identische Erkennungsqualität bei besserer Performance!")
     
     backup_db = True  # Immer Backup erstellen
     
@@ -339,8 +417,8 @@ def main():
     use_cuda = hardware_config['use_cuda'] and cuda_available
     device = torch.device("cuda" if use_cuda else "cpu")
     
-    print(f"🚀 MTG Card Embedding-Generierung")
-    print(f"🖥️  Device: {device.type.upper()}")
+    print(f"[GO] MTG Card Embedding-Generierung")
+    print(f"[SCREEN]  Device: {device.type.upper()}")
     if cuda_available and use_cuda:
         print(f"   GPU: {torch.cuda.get_device_name()}")
     elif cuda_available and not use_cuda:
@@ -348,29 +426,24 @@ def main():
     else:
         print(f"   CUDA nicht verfügbar")
     
-    print(f"📂 Bilder-Verzeichnis: {images_dir}")
-    print(f"🔧 Modell: {model_path}")
+    print(f"[DIR] Bilder-Verzeichnis: {images_dir}")
+    print(f"[TOOL] Modell: {model_path}")
     
     # Prüfungen
     if not os.path.exists(model_path):
-        print(f"❌ Modell nicht gefunden: {model_path}")
+        print(f"[ERROR] Modell nicht gefunden: {model_path}")
         print("   Bitte zuerst Training durchführen!")
         return
     
     if not os.path.exists(images_dir):
-        print(f"❌ Bilder-Verzeichnis nicht gefunden: {images_dir}")
+        print(f"[ERROR] Bilder-Verzeichnis nicht gefunden: {images_dir}")
         return
     
-    # Bildgröße automatisch erkennen (wie beim Training)
-    if config['training']['auto_detect_size']:
-        from src.cardscanner.train_triplet import detect_image_size
-        target_width, target_height = detect_image_size(images_dir)
-    else:
-        target_width = config['training']['target_width']
-        target_height = config['training']['target_height']
-    
-    resize_hw = (target_height, target_width)
-    print(f"📐 Bildgröße (Breite x Höhe): {target_width}x{target_height}")
+    # Bildgr??e identisch zum Training bestimmen
+    resize_hw = resolve_resize_hw(config, images_dir)
+    target_height, target_width = resize_hw
+    print(f"[INFO] Embedding-Export resize (W x H): {target_width}x{target_height}")
+
     
     # Embeddings generieren
     result = generate_embeddings_from_directory(
@@ -384,14 +457,14 @@ def main():
     
     # Ergebnisse
     if result['embeddings_generated'] > 0:
-        print(f"\n🎉 Embedding-Generierung erfolgreich!")
+        print(f"\n[DONE] Embedding-Generierung erfolgreich!")
         print(f" Embeddings generiert: {result['embeddings_generated']}")
         if result['errors'] > 0:
-            print(f"⚠️  Fehler beim Parsen: {result['errors']} Dateien")
-        print(f"💿 Database: {result['database_path']}")
-        print("➡️  Nächster Schritt: Kartenerkennung testen mit recognize_cards.py")
+            print(f"[WARN]  Fehler beim Parsen: {result['errors']} Dateien")
+        print(f"[DISK] Database: {result['database_path']}")
+        print("->  Nächster Schritt: Kartenerkennung testen mit recognize_cards.py")
     else:
-        print(f"\n❌ Embedding-Generierung fehlgeschlagen!")
+        print(f"\n[ERROR] Embedding-Generierung fehlgeschlagen!")
 
 
 if __name__ == "__main__":

@@ -14,7 +14,6 @@ import yaml
 from pathlib import Path
 from typing import Dict, List, Tuple
 import torch
-from torch import nn
 import torchvision.transforms as T
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
@@ -32,11 +31,15 @@ try:
     from .model import load_encoder
     from .db import SimpleCardDB
     from .dataset import parse_scryfall_filename, crop_set_symbol
+    from .image_pipeline import build_resize_normalize_transform, get_set_symbol_crop_cfg, resolve_resize_hw
+    from .embedding_utils import build_card_embedding
 except ImportError:
     # Fallback für direkten Aufruf
     from src.cardscanner.model import load_encoder
     from src.cardscanner.db import SimpleCardDB
     from src.cardscanner.dataset import parse_scryfall_filename, crop_set_symbol
+    from src.cardscanner.image_pipeline import build_resize_normalize_transform, get_set_symbol_crop_cfg, resolve_resize_hw
+    from src.cardscanner.embedding_utils import build_card_embedding
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -55,11 +58,7 @@ def load_config(config_path: str = "config.yaml") -> dict:
 
 def get_inference_transforms(resize_hw: tuple = (320, 224)) -> T.Compose:
     """Transform-Pipeline für Inference (identisch zur Embedding-Generierung). resize_hw = (H, W)."""
-    return T.Compose([
-        T.Resize(resize_hw, antialias=True),
-        T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-    ])
+    return build_resize_normalize_transform(resize_hw)
 
 
 def create_comparison_plot(camera_img_path: str, camera_img: Image.Image, 
@@ -166,7 +165,7 @@ def create_comparison_plot(camera_img_path: str, camera_img: Image.Image,
 
 def search_camera_image(model: torch.nn.Module, transform: T.Compose, 
                     db: SimpleCardDB, camera_img_path: str, 
-                    device: torch.device, config: dict) -> Tuple[Dict, float, float]:
+                    device: torch.device, config: dict, crop_cfg: dict | None) -> Tuple[Dict, float, float]:
     """
     Führt Similarity-Search für ein Camera-Bild durch
     """
@@ -178,17 +177,12 @@ def search_camera_image(model: torch.nn.Module, transform: T.Compose,
         img_rgb = img.convert('RGB')
         img_tensor = transform(img_rgb).unsqueeze(0).to(device)
         # Set-Symbol-Crop
-        crop_cfg = config.get('debug', {}).get('set_symbol_crop', None)
         crop_img = crop_set_symbol(img_rgb, crop_cfg)
         crop_tensor = transform(crop_img).unsqueeze(0).to(device)
 
-    # Embedding generieren (Full + Crop)
+    # Embedding generieren (Full + Crop) – identisch zum Export
     with torch.no_grad():
-        emb_full = model(img_tensor)
-        emb_crop = model(crop_tensor)
-        emb_full = nn.functional.normalize(emb_full, p=2, dim=-1)
-        emb_crop = nn.functional.normalize(emb_crop, p=2, dim=-1)
-        query_embedding = torch.cat([emb_full, emb_crop], dim=-1).cpu().numpy().flatten()
+        query_embedding = build_card_embedding(model, img_tensor, crop_tensor).cpu().numpy().flatten()
 
     # Suche in Database
     top_k = config.get('recognition', {}).get('top_k', 5)
@@ -228,21 +222,14 @@ def test_all_camera_images(config: dict, model_path: str, camera_dir: str,
     print(f"🎯 Database geladen: {len(db.cards)} Karten")
     
     # Transform für Inference
-    if config['training']['auto_detect_size']:
-        try:
-            from .train_triplet import detect_image_size
-        except ImportError:
-            from src.cardscanner.train_triplet import detect_image_size
-        target_width, target_height = detect_image_size(camera_dir)
-        target_size = (target_height, target_width)
-    else:
-        target_width = config['training']['target_width']
-        target_height = config['training']['target_height']
-        target_size = (target_height, target_width)
+    resize_hw = resolve_resize_hw(config, config['data']['scryfall_images'])
+    target_height, target_width = resize_hw
+    transform = get_inference_transforms(resize_hw)
+    print(f'📐 Bildgr??e (Breite x H?he): {target_width}x{target_height}')
+    crop_cfg = get_set_symbol_crop_cfg(config)
+
     
-    transform = get_inference_transforms(target_size)
-    print(f"📐 Bildgröße (Breite x Höhe): {target_width}x{target_height}")
-    
+
     # Output-Verzeichnis erstellen
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -273,7 +260,7 @@ def test_all_camera_images(config: dict, model_path: str, camera_dir: str,
             
             # Similarity-Search durchführen
             best_match, similarity_score, search_time = search_camera_image(
-                model, transform, db, str(camera_file), device, config
+                model, transform, db, str(camera_file), device, config, crop_cfg
             )
             
             total_time += search_time

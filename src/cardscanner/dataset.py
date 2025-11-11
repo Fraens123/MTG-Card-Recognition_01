@@ -1,5 +1,7 @@
 from PIL import Image
 from typing import Optional
+import torch
+
 # NEU: Set-Symbol-Crop-Funktion
 def crop_set_symbol(img: Image.Image, crop_cfg: Optional[dict] = None) -> Image.Image:
     """
@@ -65,6 +67,18 @@ from typing import Dict, List, Tuple, Optional
 from PIL import Image
 from torch.utils.data import Dataset
 import torchvision.transforms as T
+from torchvision.utils import save_image
+
+_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+_STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+
+
+def _denormalize_for_save(tensor: torch.Tensor) -> torch.Tensor:
+    tensor = tensor.detach().cpu()
+    if tensor.ndim == 3:
+        tensor = tensor.unsqueeze(0)
+    img = tensor * _STD + _MEAN
+    return torch.clamp(img, 0.0, 1.0)
 
 
 def parse_scryfall_filename(filename: str) -> Optional[Tuple[str, str, str, str]]:
@@ -113,6 +127,7 @@ class TripletImageDataset(Dataset):
         cache_images: bool = True,
         cache_max_size: int = 1000,
         max_samples_per_epoch: Optional[int] = None,
+        set_symbol_crop_cfg: Optional[dict] = None,
     ) -> None:
         """
         Dataset für MTG-Karten Triplet Training.
@@ -125,14 +140,17 @@ class TripletImageDataset(Dataset):
         self.transform_posneg = transform_posneg
         self.use_camera_augmentor = use_camera_augmentor
 
-        # NEU: Set-Symbol-Crop-Konfiguration aus config.yaml
-        try:
-            with open("config.yaml", "r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f)
-            self.set_symbol_crop_cfg = cfg.get("debug", {}).get("set_symbol_crop", None)
-        except Exception as e:
-            print(f"[WARN] TripletImageDataset: config.yaml nicht lesbar: {e}")
-            self.set_symbol_crop_cfg = None
+        # Set-Symbol-Crop einmalig bestimmen, damit Training/Export identisch schneiden.
+        if set_symbol_crop_cfg is not None:
+            self.set_symbol_crop_cfg = set_symbol_crop_cfg
+        else:
+            try:
+                with open("config.yaml", "r", encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f)
+                self.set_symbol_crop_cfg = cfg.get("debug", {}).get("set_symbol_crop", None)
+            except Exception as e:
+                print(f"[WARN] TripletImageDataset: config.yaml nicht lesbar: {e}")
+                self.set_symbol_crop_cfg = None
         if self.use_camera_augmentor:
             if augmentor_params is None:
                 # Lade Parameter aus config.yaml
@@ -234,7 +252,6 @@ class TripletImageDataset(Dataset):
               ...
         """
         import os
-        from torchvision.utils import save_image
 
         full_dir = os.path.join(output_dir, "full")
         symbol_dir = os.path.join(output_dir, "symbol")
@@ -268,13 +285,13 @@ class TripletImageDataset(Dataset):
             for i in range(n_aug):
                 aug_tensor = self.transform_anchor(img) if self.transform_anchor else T.ToTensor()(img)
                 full_path = os.path.join(full_dir, f"{card_id}_aug_{i:02d}.png")
-                save_image(aug_tensor, full_path)
+                save_image(_denormalize_for_save(aug_tensor), full_path)
 
                 # Einfacher Symbol-Crop aus Original (nicht 100% identisch zur Transform-Pipeline)
                 crop_img = crop_set_symbol(img, self.set_symbol_crop_cfg)
                 crop_tensor = self.transform_anchor(crop_img) if self.transform_anchor else T.ToTensor()(crop_img)
                 symbol_path = os.path.join(symbol_dir, f"{card_id}_aug_{i:02d}.png")
-                save_image(crop_tensor, symbol_path)
+                save_image(_denormalize_for_save(crop_tensor), symbol_path)
 
         print(f"Augmentierungen gespeichert in: {output_dir}")
 
@@ -336,6 +353,7 @@ class TripletImageDataset(Dataset):
             p_img = self.camera_augmentor.create_camera_like_augmentations(p_img, num_augmentations=1)[-1]
             n_img = self.camera_augmentor.create_camera_like_augmentations(n_img, num_augmentations=1)[-1]
 
+        # Effektive Pipeline: Scryfall-Bild -> (optional) CameraLikeAugmentor -> Set-Symbol-Crop -> Resize/ToTensor/Normalize.
         # NEU: Set-Symbol-Crops aus den augmentierten Bildern schneiden
         a_crop_img = crop_set_symbol(a_img, self.set_symbol_crop_cfg)
         p_crop_img = crop_set_symbol(p_img, self.set_symbol_crop_cfg)

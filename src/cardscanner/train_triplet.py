@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import random
@@ -19,6 +20,7 @@ from tqdm import tqdm
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from src.cardscanner.model import Encoder, save_encoder
 from src.cardscanner.dataset import TripletImageDataset
+from src.cardscanner.image_pipeline import build_resize_normalize_transform, detect_image_size
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -31,38 +33,13 @@ def load_config(config_path: str = "config.yaml") -> dict:
     return data
 
 
-def detect_image_size(images_dir: str) -> Tuple[int, int]:
-    for root, _, files in os.walk(images_dir):
-        for name in files:
-            if not name.lower().endswith((".jpg", ".jpeg", ".png")):
-                continue
-            img_path = os.path.join(root, name)
-            with Image.open(img_path) as img:
-                width, height = img.size
-            max_dim = 400
-            if max(width, height) > max_dim:
-                scale = max_dim / max(width, height)
-                width = int(width * scale)
-                height = int(height * scale)
-            width = (width // 8) * 8 or 224
-            height = (height // 8) * 8 or 320
-            print(f"Detected training size: {width}x{height}")
-            return width, height
-    print("Falling back to 224x320")
-    return 224, 320
-
-
 def get_transforms(resize_hw: Tuple[int, int], variant: str = "full") -> Tuple[T.Compose, T.Compose]:
     """
     Liefert zwei Pipelines:
     - anchor_transform: darf stärker augmentieren (Rotation/Blur etc.).
     - base_transform: nur Resize + Norm, um CPU/RAM zu schonen.
     """
-    base_transform = T.Compose([
-        T.Resize(resize_hw, antialias=True),
-        T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-    ])
+    base_transform = build_resize_normalize_transform(resize_hw)
 
     variant = (variant or "full").lower()
     if variant not in {"full", "light"}:
@@ -225,10 +202,16 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
     hardware_cfg = config["hardware"]
     paths_cfg = config.get("paths", {})
     debug_cfg = config.get("debug", {})
+    margin = training_cfg.get("margin", 0.3)
+    ce_weight = training_cfg.get("ce_weight", 0.0)
+    symbol_loss_weight = training_cfg.get("symbol_loss_weight", 0.5)
 
     use_cuda = hardware_cfg.get("use_cuda", True) and torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
     print(f"Training on {device}")
+    print(
+        f"[INFO] Loss-Setup: margin={margin:.3f}, ce_weight={ce_weight:.3f}, symbol_loss_weight={symbol_loss_weight:.3f}"
+    )
 
     if training_cfg.get("auto_detect_size", False):
         target_width, target_height = detect_image_size(images_dir)
@@ -237,6 +220,7 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
         target_height = training_cfg["target_height"]
         print(f"Using configured image size (width x height): {target_width}x{target_height}")
     resize_hw = (target_height, target_width)
+    print(f"[INFO] Training resize (W x H): {target_width}x{target_height}")
 
     transform_variant = training_cfg.get("transform_variant", "full")
     print(f"[INFO] Transform-Variante: {transform_variant}")
@@ -253,6 +237,10 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
     max_samples = training_cfg.get("max_samples_per_epoch")
     if max_samples is not None and max_samples <= 0:
         max_samples = None
+    if max_samples:
+        print(f"[INFO] max_samples_per_epoch: {max_samples}")
+    else:
+        print("[INFO] max_samples_per_epoch: full dataset")
     use_camera_augmentor = training_cfg.get("use_camera_augmentor", True)
     if not use_camera_augmentor:
         print("[INFO] Kamera-Augmentor deaktiviert – es laufen nur die Torch-Transforms.")
@@ -268,6 +256,7 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
         cache_images=cache_images,
         cache_max_size=cache_max_size,
         max_samples_per_epoch=max_samples,
+        set_symbol_crop_cfg=config.get("debug", {}).get("set_symbol_crop"),
     )
 
     print(f"\n[INFO] Trainingsdaten: {len(dataset.card_ids)} Karten (Scryfall)")
@@ -333,12 +322,10 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
     optimizer = torch.optim.Adam(model.parameters(), lr=training_cfg["learning_rate"])
     triplet_loss_fn = nn.TripletMarginWithDistanceLoss(
         distance_function=lambda x, y: 1 - nn.functional.cosine_similarity(x, y),
-        margin=training_cfg["margin"],
+        margin=margin,
         reduction="mean",
     )
     ce_loss_fn = nn.CrossEntropyLoss()
-    ce_weight = training_cfg.get("ce_weight", 0.0)
-    symbol_loss_weight = training_cfg.get("symbol_loss_weight", 0.5)
 
     best_loss = float("inf")
     best_state = None
@@ -527,9 +514,21 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
     return model
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train Triplet/CE model for MTG card embeddings.")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="config.yaml",
+        help="Path to the YAML configuration file.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     start = time.time()
-    config = load_config("config.yaml")
+    config = load_config(args.config)
     data_cfg = config["data"]
     model = train(config, data_cfg["scryfall_images"], data_cfg.get("camera_images"))
     end = time.time()

@@ -1,3 +1,9 @@
+# Datenbanken und JSON-Dateien ignorieren
+data/*.json
+models/*.json
+output_matches/*.json
+*.sqlite
+*.db
 data/cards.json
 # Ignore all image files everywhere
 *.jpg
