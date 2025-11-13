@@ -62,10 +62,10 @@ def save_grid(rows: List[List[Image.Image]], tile_size: tuple[int, int], output_
 def main() -> None:
     parser = argparse.ArgumentParser(description="Visualisiert CameraLikeAugmentor-Ausgaben.")
     parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--num-images", type=int, default=5, help="Anzahl zufälliger Scryfall-Bilder")
+    parser.add_argument("--num-images", type=int, default=5, help="Anzahl zufaelliger Scryfall-Bilder")
     parser.add_argument("--per-image", type=int, default=6, help="Augmentierungen pro Bild")
     parser.add_argument("--camera-refs", type=int, default=2, help="Anzahl Pi-Cam-Referenzen pro Reihe")
-    parser.add_argument("--output", default="debug/domain_preview", help="Zielordner für Previews")
+    parser.add_argument("--output", default="debug/domain_preview", help="Zielordner fuer Previews")
     args = parser.parse_args()
 
     config = load_config(args.config)

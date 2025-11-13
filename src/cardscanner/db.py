@@ -20,34 +20,43 @@ def load_config(config_path: str = "config.yaml") -> dict:
 class SimpleCardDB:
     """Einfache In-Memory Kartendatenbank mit JSON-Persistierung"""
     
-    def __init__(self, db_path: str = None, config_path: str = "config.yaml"):
+    def __init__(
+        self,
+        db_path: str = None,
+        config_path: str = "config.yaml",
+        load_existing: bool = True,
+    ):
         # Entweder direkter Pfad oder aus Config
         if db_path:
             self.db_path = Path(db_path)
         else:
             config = load_config(config_path)
             self.db_path = Path(config.get('database', {}).get('path', './data/cards.json'))
-            
+
         self.cards: List[Dict[str, Any]] = []
-        self.embeddings: np.ndarray = None
-        self.load_from_file()
+        self.embeddings: np.ndarray | None = None
+        self.meta: Dict[str, Any] = {}
+        if load_existing:
+            self.load_from_file()
     
     def load_from_file(self):
         """Lädt Kartendaten aus JSON-Datei"""
-        if self.db_path.exists():
-            with open(self.db_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                self.cards = data.get('cards', [])
-                embeddings_list = data.get('embeddings', [])
-                if embeddings_list:
-                    self.embeddings = np.array(embeddings_list, dtype=np.float32)
+        if not self.db_path.exists():
+            return
+        with open(self.db_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        self.cards = data.get('cards', [])
+        embeddings_list = data.get('embeddings', [])
+        self.embeddings = np.array(embeddings_list, dtype=np.float32) if embeddings_list else None
+        self.meta = data.get('meta', {})
     
     def save_to_file(self):
         """Speichert Kartendaten in JSON-Datei"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             'cards': self.cards,
-            'embeddings': self.embeddings.tolist() if self.embeddings is not None else []
+            'embeddings': self.embeddings.tolist() if self.embeddings is not None else [],
+            'meta': self.meta,
         }
         with open(self.db_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)

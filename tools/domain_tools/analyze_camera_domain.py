@@ -95,7 +95,7 @@ def compute_stats(image_paths: List[Path]) -> Dict[str, float]:
 
 def print_stats(label: str, stats: Dict[str, float]) -> None:
     if not stats:
-        print(f"[WARN] Keine Daten für {label}")
+        print(f"[WARN] No data for {label}")
         return
     print(f"\n=== {label} ===")
     print(f"Samples:           {stats['count']}")
@@ -112,26 +112,26 @@ def suggest_ranges(scryfall: Dict[str, float], camera: Dict[str, float]) -> None
     brightness_ratio = camera["mean_luminance"] / max(scryfall["mean_luminance"], 1e-6)
     brightness_min = max(0.4, brightness_ratio - camera["std_luminance"])
     brightness_max = min(1.6, brightness_ratio + camera["std_luminance"])
-    print(f"brightness_min/max ≈ ({brightness_min:.2f}, {brightness_max:.2f})")
+    print(f"brightness_min/max ~= ({brightness_min:.2f}, {brightness_max:.2f})")
 
     contrast_ratio = camera["std_luminance"] / max(scryfall["std_luminance"], 1e-6)
     contrast_min = max(0.6, contrast_ratio * 0.8)
     contrast_max = min(1.6, contrast_ratio * 1.2)
-    print(f"contrast_min/max   ≈ ({contrast_min:.2f}, {contrast_max:.2f})")
+    print(f"contrast_min/max   ~= ({contrast_min:.2f}, {contrast_max:.2f})")
 
     blur_hint = math.sqrt(camera["laplacian_var"] + 1e-6)
     blur_sigma = max(0.2, 1.0 / (blur_hint + 1e-6))
-    print(f"blur_sigma_max     ≈ {blur_sigma:.2f}")
+    print(f"blur_sigma_max     ~= {blur_sigma:.2f}")
 
     noise_hint = max(0.005, abs(camera["mean_luminance"] - scryfall["mean_luminance"]) / 3)
-    print(f"noise_std_max      ≈ {noise_hint:.3f}")
+    print(f"noise_std_max      ~= {noise_hint:.3f}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Analysiert Scryfall vs. Kamera-Bilddomäne.")
+    parser = argparse.ArgumentParser(description="Analyse Scryfall vs. Kamera-Domaene.")
     parser.add_argument("--config", default="config.yaml", help="Pfad zur config.yaml")
-    parser.add_argument("--scryfall-limit", type=int, default=200, help="Max. Scryfall-Bilder für Statistik")
-    parser.add_argument("--camera-limit", type=int, default=200, help="Max. Kamera-Bilder für Statistik")
+    parser.add_argument("--scryfall-limit", type=int, default=200, help="Max. Scryfall-Bilder fuer Statistik")
+    parser.add_argument("--camera-limit", type=int, default=200, help="Max. Kamera-Bilder fuer Statistik")
     args = parser.parse_args()
 
     config = load_config(args.config)

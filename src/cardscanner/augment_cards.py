@@ -20,7 +20,7 @@ def load_config(config_path: str = "config.yaml") -> dict:
         with open(config_path, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
     except FileNotFoundError:
-        print(f"?s????  Config-Datei nicht gefunden: {config_path}")
+        print(f"[WARN] Config-Datei nicht gefunden: {config_path}")
         return {}
 
 
@@ -146,10 +146,11 @@ class CameraLikeAugmentor:
         if abs(offset) > 2:
             # Simuliere leichte Trapezform durch horizontale Skalierung
             new_img = img.transform(
-                (w, h), 
+                (w, h),
                 Image.PERSPECTIVE,
                 (0, offset, w, 0, w, h, 0, h - offset),
-                fillcolor=self.fill_color
+                resample=Image.BICUBIC,
+                fillcolor=self.fill_color,
             )
             return new_img
         return img
@@ -355,7 +356,7 @@ def main():
     output_path = Path(args.output_dir)
     
     if not input_path.exists():
-        print(f"??O Input-Verzeichnis nicht gefunden: {input_path}")
+        print(f"[ERROR] Input-Verzeichnis nicht gefunden: {input_path}")
         return
     
     output_path.mkdir(parents=True, exist_ok=True)
@@ -363,7 +364,7 @@ def main():
     # Scryfall-Bilder finden
     image_files = list(input_path.glob("*.jpg")) + list(input_path.glob("*.png"))
     if not image_files:
-        print(f"??O Keine Bilddateien gefunden in: {input_path}")
+        print(f"[ERROR] Keine Bilddateien gefunden in: {input_path}")
         return
 
     # Pr??fe, welche Karten bereits augmentiert wurden
@@ -374,12 +375,23 @@ def main():
     # Filtere nur neue Karten
     new_image_files = [img for img in image_files if img.stem not in already_augmented]
 
-    print(f"?Y"< Gefunden: {len(image_files)} Scryfall-Bilder, davon {len(new_image_files)} neue Karten")
-    print(f"?YZ? Erstelle {args.num_augmentations} Camera-??hnliche Augmentierungen pro Bild (nur neue Karten)")
-    print(f"?Y"< Camera-Parameter: Helligkeit={camera_params['brightness_range']}, "
-          f"Kontrast={camera_params['contrast_range']}, Blur=0-{args.blur_max}, "
-          f"Rauschen=0-{args.noise_max}, Rotation=??{args.rotation_max}??")
-    print(f"?YZ? Hintergrundfarbe: {args.background_color}")
+    print(
+        f"[INFO] Gefunden: {len(image_files)} Scryfall-Bilder, davon "
+        f"{len(new_image_files)} neue Karten"
+    )
+    print(
+        f"[INFO] Erstelle {args.num_augmentations} Camera-aehnliche Augmentierungen pro Bild "
+        "(nur neue Karten)"
+    )
+    print(
+        "[INFO] Camera-Parameter: "
+        f"Helligkeit={camera_params['brightness_range']}, "
+        f"Kontrast={camera_params['contrast_range']}, "
+        f"Blur=0-{args.blur_max}, "
+        f"Rauschen=0-{args.noise_max}, "
+        f"Rotation=+/-{args.rotation_max}"
+    )
+    print(f"[INFO] Hintergrundfarbe: {args.background_color}")
 
     # Augmentor erstellen
     augmentor = CameraLikeAugmentor(**camera_params)
@@ -387,10 +399,10 @@ def main():
     total_generated = 0
 
     for img_file in new_image_files:
-        print(f"\n?Y"" Verarbeite: {img_file.name}")
+        print(f"\n[RUN] Verarbeite: {img_file.name}")
         try:
             original_img = Image.open(img_file).convert('RGB')
-            print(f"   ?Y"? Original-Format: {original_img.size}")
+            print(f"   [INFO] Original-Format: {original_img.size}")
             augmentations = augmentor.create_camera_like_augmentations(
                 original_img, 
                 num_augmentations=args.num_augmentations
@@ -403,14 +415,14 @@ def main():
                     output_name = f"{card_name}_aug_{i:02d}.jpg"
                 output_file = output_path / output_name
                 aug_img.save(output_file, 'JPEG', quality=85)
-                print(f"   ?Y'? Gespeichert: {output_name} ({aug_img.size})")
+                print(f"   [SAVE] {output_name} ({aug_img.size})")
                 total_generated += 1
         except Exception as e:
-            print(f"   ??O Fehler bei {img_file.name}: {e}")
+            print(f"   [ERROR] Fehler bei {img_file.name}: {e}")
 
-    print(f"\n?o. Fertig! {total_generated} augmentierte Bilder erstellt in {output_path}")
-    print(f"?Y", Format: Original Scryfall-Format (488x680) beibehalten")
-    print(f"?YZ? Camera-Bedingungen: Belichtung, Kontrast, Blur, Rauschen, Rotation, Perspektive, Schatten")
+    print(f"\n[OK] Fertig! {total_generated} augmentierte Bilder erstellt in {output_path}")
+    print("[INFO] Format: Original Scryfall-Format (488x680) beibehalten")
+    print("[INFO] Camera-Bedingungen: Belichtung, Kontrast, Blur, Rauschen, Rotation, Perspektive, Schatten")
 
 
 if __name__ == "__main__":

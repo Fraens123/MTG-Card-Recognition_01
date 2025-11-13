@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 import random
 import sys
@@ -41,7 +42,7 @@ def load_config(config_path: str = "config.yaml") -> dict:
 def get_transforms(resize_hw: Tuple[int, int], variant: str = "full") -> Tuple[T.Compose, T.Compose]:
     """
     Liefert zwei Pipelines:
-    - anchor_transform: darf st??rker augmentieren (Rotation/Blur etc.).
+    - anchor_transform: darf staerker augmentieren (Rotation/Blur etc.).
     - base_transform: nur Resize + Norm, um CPU/RAM zu schonen.
     """
     base_transform = build_resize_normalize_transform(resize_hw)
@@ -84,7 +85,7 @@ def get_transforms(resize_hw: Tuple[int, int], variant: str = "full") -> Tuple[T
 
 def save_feature_maps(feature_tensor: torch.Tensor, out_dir: str, max_channels: int = 16):
     """
-    Speichert bis zu max_channels einzelne Feature-Maps unver??ndert in Originalaufl??sung.
+    Speichert bis zu max_channels einzelne Feature-Maps unveraendert in Originalaufloesung.
     """
     os.makedirs(out_dir, exist_ok=True)
     fmap = feature_tensor[0]
@@ -100,7 +101,7 @@ def save_feature_maps(feature_tensor: torch.Tensor, out_dir: str, max_channels: 
         nd = (ch_norm.numpy() * 255).astype("uint8")
         img = Image.fromarray(nd, mode="L")
         img.save(os.path.join(out_dir, f"ch_{i:03d}.png"))
-    print(f"[DEBUG] Featuremaps gespeichert: {out_dir} ({c} Kan??le)")
+    print(f"[DEBUG] Featuremaps gespeichert: {out_dir} ({c} Kanaele)")
 
 
 def save_feature_maps_for_preview(model: nn.Module,
@@ -112,11 +113,11 @@ def save_feature_maps_for_preview(model: nn.Module,
     full_dir = os.path.join(preview_dir, "full")
     symbol_dir = os.path.join(preview_dir, "symbol")
     if not os.path.isdir(full_dir):
-        print("[DEBUG] Kein full/-Ordner im preview_dir ??" Featuremaps werden ??bersprungen.")
+        print("[DEBUG] Kein full/-Ordner im preview_dir -> Featuremaps werden uebersprungen.")
         return
     full_files = sorted([f for f in os.listdir(full_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
     if not full_files:
-        print("[DEBUG] Keine Preview-Bilder gefunden ??" Featuremaps werden ??bersprungen.")
+        print("[DEBUG] Keine Preview-Bilder gefunden -> Featuremaps werden uebersprungen.")
         return
     full_path = os.path.join(full_dir, full_files[0])
     symbol_path = None
@@ -214,12 +215,33 @@ def log_debug_images(writer: SummaryWriter,
 def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Module | None:
     training_cfg = config["training"]
     model_cfg = config["model"]
+    default_model_output = model_cfg.get("weights_path")
     hardware_cfg = config["hardware"]
     paths_cfg = config.get("paths", {})
     debug_cfg = config.get("debug", {})
     margin = training_cfg.get("margin", 0.3)
     ce_weight = training_cfg.get("ce_weight", 0.0)
     symbol_loss_weight = training_cfg.get("symbol_loss_weight", 0.5)
+
+    fine_tune = bool(training_cfg.get("fine_tune", False))
+    strict_load = bool(training_cfg.get("strict_load", fine_tune))
+    load_model_path = training_cfg.get("model_path") or model_cfg.get("weights_path")
+    save_model_path = training_cfg.get("save_path") or model_cfg.get("weights_path")
+
+    print(f"[CONFIG] fine_tune={fine_tune}")
+    print(f"[CONFIG] model_path={load_model_path}")
+    print(f"[CONFIG] save_path={save_model_path}")
+    print(f"[CONFIG] strict_load={strict_load}")
+
+    if not save_model_path:
+        raise SystemExit("[ERROR] Kein save_path/model.weights_path definiert – bitte config aktualisieren.")
+    if fine_tune:
+        if not load_model_path:
+            raise SystemExit("[ERROR] Fine-Tuning verlangt training.model_path oder model.weights_path.")
+        if not os.path.exists(load_model_path):
+            raise SystemExit(f"[ERROR] Basis-Checkpoint nicht gefunden: {load_model_path}")
+        if os.path.abspath(load_model_path) == os.path.abspath(save_model_path):
+            raise SystemExit("[ERROR] save_path == model_path – Basismodell würde überschrieben. Bitte anderen Pfad wählen.")
 
     use_cuda = hardware_cfg.get("use_cuda", True) and torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
@@ -251,9 +273,15 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
     cache_images = training_cfg.get("cache_images", True)
     cache_max_size = training_cfg.get("cache_max_size", 1000)
 
-    # Es werden ausschlie?Ylich die Scryfall-Bilder verwendet ??" Kamera-Fotos bleiben au?Yen vor.
     dataset_camera_dir = None
-    if camera_dir:
+    if training_cfg.get("use_camera_images"):
+        dataset_camera_dir = training_cfg.get("camera_images_path") or camera_dir
+        if dataset_camera_dir and os.path.isdir(dataset_camera_dir):
+            print(f"[INFO] Zusätzliche Camera-Bilder aktiv: {dataset_camera_dir}")
+        else:
+            print("[WARN] use_camera_images=true, aber Pfad nicht gefunden – verwende nur Scryfall.")
+            dataset_camera_dir = None
+    elif camera_dir:
         print("[INFO] Kamera-Bilder werden ignoriert (nur Scryfall-Daten erlaubt).")
 
     max_samples = training_cfg.get("max_samples_per_epoch")
@@ -265,7 +293,7 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
         print("[INFO] max_samples_per_epoch: full dataset")
     use_camera_augmentor = training_cfg.get("use_camera_augmentor", True)
     if not use_camera_augmentor:
-        print("[INFO] Kamera-Augmentor deaktiviert ??" es laufen nur die Torch-Transforms.")
+        print("[INFO] Kamera-Augmentor deaktiviert -> es laufen nur die Torch-Transforms.")
 
     dataset = TripletImageDataset(
         images_dir,
@@ -283,11 +311,11 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
     )
 
     print(f"\n[INFO] Trainingsdaten: {len(dataset.card_ids)} Karten (Scryfall)")
-    print(f"[INFO] Verf??gbare Einzelbilder: {dataset.total_available_samples}")
+    print(f"[INFO] Verfuegbare Einzelbilder: {dataset.total_available_samples}")
     if max_samples:
-        print(f"[INFO] Effektive Dataset-L??nge pro Epoche: {len(dataset)} (Limit {max_samples})")
+        print(f"[INFO] Effektive Dataset-Laenge pro Epoche: {len(dataset)} (Limit {max_samples})")
     else:
-        print(f"[INFO] Effektive Dataset-L??nge pro Epoche: {len(dataset)} (alle verf??gbaren Samples)")
+        print(f"[INFO] Effektive Dataset-Laenge pro Epoche: {len(dataset)} (alle verfuegbaren Samples)")
 
     debug_preview_dir = debug_cfg.get("augmentation_preview_dir")
     featuremap_dir = debug_cfg.get("featuremap_preview_dir")
@@ -342,16 +370,31 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
         pretrained=True,
     ).to(device)
 
-    weight_path = model_cfg.get("weights_path")
-    if training_cfg.get("load_pretrained_weights", True) and weight_path and os.path.exists(weight_path):
+    load_pretrained = training_cfg.get("load_pretrained_weights", True) or fine_tune
+    if load_pretrained and load_model_path:
+        if not os.path.exists(load_model_path):
+            raise SystemExit(f"[ERROR] Gewichtsdatei nicht gefunden: {load_model_path}")
+        print(f"[INFO] Lade Pretrained-Checkpoint: {load_model_path}")
         try:
-            state = torch.load(weight_path, map_location=device)
-            missing = model.load_state_dict(state, strict=False)
-            print(f"[INFO] Vortrainierte Gewichte geladen: {weight_path}")
+            state = torch.load(load_model_path, map_location=device)
+            checkpoint_meta = None
+            if isinstance(state, dict) and "state_dict" in state:
+                checkpoint_meta = state
+                state = state["state_dict"]
+            sample_key = next(iter(model.state_dict().keys()))
+            before_sum = float(model.state_dict()[sample_key].sum().item())
+            missing = model.load_state_dict(state, strict=strict_load)
+            after_sum = float(model.state_dict()[sample_key].sum().item())
+            if checkpoint_meta and "num_classes" in checkpoint_meta:
+                print(f"[INFO] Checkpoint-Klassen (zur Kontrolle): {checkpoint_meta['num_classes']}")
             if missing.missing_keys:
                 print(f"[WARN] Fehlende Keys beim Laden: {missing.missing_keys}")
+            if math.isclose(before_sum, after_sum, rel_tol=1e-5, abs_tol=1e-5):
+                print("[WARN] Checksum unverändert – bitte prüfen, ob der Checkpoint korrekt geladen wurde.")
         except Exception as exc:
-            print(f"[WARN] Konnte Gewichte nicht laden ({weight_path}): {exc}")
+            raise SystemExit(f"[ERROR] Konnte Gewichte nicht laden ({load_model_path}): {exc}") from exc
+    elif load_pretrained and not load_model_path:
+        print("[WARN] load_pretrained_weights=true, aber kein Pfad angegeben.")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=training_cfg["learning_rate"])
     triplet_loss_fn = nn.TripletMarginWithDistanceLoss(
@@ -536,7 +579,7 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
     model.load_state_dict(best_state)
     model.eval()
 
-    weights_path = model_cfg["weights_path"]
+    weights_path = save_model_path
     os.makedirs(os.path.dirname(weights_path), exist_ok=True)
     save_encoder(model, weights_path, class_ids=dataset.card_ids)
 
@@ -545,6 +588,11 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
         json.dump({"class_ids": dataset.card_ids, "class_to_idx": dataset.card_to_idx}, fh, indent=2)
     print(f"Saved model to {weights_path}")
     print(f"Saved class mapping to {mapping_path}")
+    if default_model_output and os.path.abspath(default_model_output) != os.path.abspath(weights_path):
+        print(
+            "[INFO] Hinweis: config.model.weights_path verweist aktuell auf "
+            f"{default_model_output}. Bitte anpassen, damit Export/Erkennung das neue Modell nutzen."
+        )
     return model
 
 

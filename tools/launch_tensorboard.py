@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
+import importlib.util
 
 import yaml
 
@@ -22,6 +23,15 @@ def resolve_logdir(config: dict, override: Optional[str]) -> Path:
     return (output_dir / "runs").resolve()
 
 
+def resolve_tensorboard_module() -> str:
+    """Returns 'tensorboard' when __main__ exists, else falls back to 'tensorboard.main'."""
+    if importlib.util.find_spec("tensorboard.__main__") is not None:
+        return "tensorboard"
+    if importlib.util.find_spec("tensorboard.main") is not None:
+        return "tensorboard.main"
+    raise ModuleNotFoundError("tensorboard ist nicht installiert. Bitte 'pip install tensorboard' ausfuehren.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Launch TensorBoard pointing at output_matches/runs (or custom logdir)."
@@ -30,7 +40,7 @@ def main() -> None:
     parser.add_argument(
         "--logdir",
         default=None,
-        help="Optional explizites Log-Verzeichnis (überschreibt config).",
+        help="Optional explizites Log-Verzeichnis (ueberschreibt config).",
     )
     parser.add_argument("--host", default="localhost", help="TensorBoard Host (default: localhost).")
     parser.add_argument("--port", default="6006", help="TensorBoard Port (default: 6006).")
@@ -47,11 +57,11 @@ def main() -> None:
     print(f"Log-Verzeichnis: {logdir}")
     print("Abbrechen mit CTRL+C.")
 
-    # Einige Installationen haben keinen tensorboard.__main__, daher direkt tensorboard.main.
+    module_name = resolve_tensorboard_module()
     cmd = [
         sys.executable,
         "-m",
-        "tensorboard.main",
+        module_name,
         "--logdir",
         str(logdir),
         "--host",

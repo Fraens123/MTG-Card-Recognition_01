@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -173,16 +174,15 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
     print(f"[DIR] Verarbeite Bilder aus: {images_dir}")
     
     # Backup der bestehenden Database
-    if backup_db:
-        config = load_config()
-        db_path = config['database']['path']
-        if os.path.exists(db_path):
-            backup_path = f"{db_path}.backup"
-            shutil.copy2(db_path, backup_path)
-            print(f"[SAVE] Database-Backup erstellt: {backup_path}")
+    db_path = config.get('database', {}).get('path', './data/cards.json')
+    if backup_db and os.path.exists(db_path):
+        backup_path = f"{db_path}.backup"
+        shutil.copy2(db_path, backup_path)
+        print(f"[SAVE] Database-Backup erstellt: {backup_path}")
     
-    # Neue Database erstellen (??berschreibt die alte!)
-    db = SimpleCardDB()
+    # Neue Database erstellen (ueberschreibt die alte!)
+    db = SimpleCardDB(db_path=db_path, load_existing=False)
+    print(f"[INFO] Ueberschreibe Embedding-DB: {db.db_path}")
 
     # Transform f?r Inference
     full_transform = get_inference_transforms(resize_hw)
@@ -221,6 +221,13 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
             card_uuid, set_code, collector_number, card_name = meta
             unique_cards.add(f"{set_code}_{collector_number}_{card_name}")
     print(f"[INFO] Eindeutige Karten: {len(unique_cards)}")
+    db.meta = {
+        "model_path": os.path.abspath(model_path),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "embedding_mode": "original" if use_original_mode else "full",
+        "camera_augmentor": bool(effective_camera_aug),
+    }
+
     if use_original_mode:
         max_centroids = config["database"].get("n_centroids", 12)
         print(f"[INFO] Export-Modus: Original -> KMeans (max {max_centroids} Centroids pro Karte)")
@@ -235,7 +242,7 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
         return {
             'embeddings_generated': 0,
             'errors': 0,
-            'database_path': str(SimpleCardDB().db_path)
+            'database_path': str(db_path)
         }
     # Embeddings pro Karte sammeln (parallele Verarbeitung mit DataLoader)
     from collections import defaultdict
@@ -427,7 +434,7 @@ def main():
         print(f"   CUDA nicht verf??gbar")
     
     print(f"[DIR] Bilder-Verzeichnis: {images_dir}")
-    print(f"[TOOL] Modell: {model_path}")
+    print(f"[INFO] Embedding-Export verwendet Modell: {model_path}")
     
     # Pr??fungen
     if not os.path.exists(model_path):

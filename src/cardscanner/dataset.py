@@ -14,6 +14,35 @@ from src.cardscanner.augment_cards import CameraLikeAugmentor
 from src.cardscanner.image_pipeline import crop_set_symbol, get_set_symbol_crop_cfg, build_resize_normalize_transform
 
 
+class LRUCache(OrderedDict):
+    """Simple LRU-Cache für PIL-Bilder, begrenzt über max_size."""
+
+    def __init__(self, max_size: int = 0):
+        super().__init__()
+        self.max_size = max(0, int(max_size or 0))
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        self.move_to_end(key)
+        return value
+
+    def __setitem__(self, key, value):
+        if self.max_size <= 0:
+            return
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        while len(self) > self.max_size:
+            self.popitem(last=False)
+
+    def __getstate__(self):
+        return self.max_size, list(self.items())
+
+    def __setstate__(self, state):
+        max_size, items = state
+        self.__init__(max_size)
+        for key, value in items:
+            super().__setitem__(key, value)
+
 
 _MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
 _STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
