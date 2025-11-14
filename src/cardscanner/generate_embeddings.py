@@ -14,6 +14,8 @@ from src.cardscanner.embedding_utils import build_card_embedding
 from src.cardscanner.image_pipeline import (
     build_resize_normalize_transform,
     get_set_symbol_crop_cfg,
+    get_full_art_crop_cfg,
+    crop_card_art,
     resolve_resize_hw,
 )
 from torchvision import transforms as tv_transforms
@@ -47,6 +49,7 @@ class CardAugmentDataset(data.Dataset):
         crop_transform,
         meta_parser,
         set_symbol_crop_cfg,
+        full_art_crop_cfg,
         num_variants: int,
         camera_augmentor=None,
         enable_camera_aug: bool = False,
@@ -56,6 +59,7 @@ class CardAugmentDataset(data.Dataset):
         self.crop_transform = crop_transform
         self.meta_parser = meta_parser
         self.set_symbol_crop_cfg = set_symbol_crop_cfg
+        self.full_art_crop_cfg = full_art_crop_cfg
         self.total_variants = max(num_variants, 1)
         self.camera_augmentor = camera_augmentor
         self.use_camera_augmentor = bool(enable_camera_aug and camera_augmentor is not None)
@@ -79,7 +83,8 @@ class CardAugmentDataset(data.Dataset):
                 aug_img = self.random_augment(img)
 
         # Pipeline entspricht dem Training: Bild -> (optional) Kamera-Augmentor -> Crop -> Resize/ToTensor/Normalize.
-        tensor_full = self.full_transform(aug_img)
+        art_img = crop_card_art(aug_img, self.full_art_crop_cfg)
+        tensor_full = self.full_transform(art_img)
 
         # Set-Symbol-Crop (aus augmentiertem Bild)
         crop_img = crop_set_symbol(aug_img, self.set_symbol_crop_cfg)
@@ -193,6 +198,7 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
     workers = emb_export.get("workers", 4)
     aug_params = config.get("camera_augmentor", config.get("augmentation", {}))
     set_symbol_crop_cfg = get_set_symbol_crop_cfg(config) or {}
+    full_art_crop_cfg = get_full_art_crop_cfg(config)
     crop_resize_hw = (set_symbol_crop_cfg.get("target_height", 64), set_symbol_crop_cfg.get("target_width", 160))
     crop_transform = build_resize_normalize_transform(crop_resize_hw)
     camera_augmentor = None
@@ -256,6 +262,7 @@ def generate_embeddings_from_directory(config: dict, model_path: str, images_dir
         crop_transform,
         parse_scryfall_filename,
         set_symbol_crop_cfg,
+        full_art_crop_cfg,
         num_variants,
         camera_augmentor=camera_augmentor,
         enable_camera_aug=effective_camera_aug,

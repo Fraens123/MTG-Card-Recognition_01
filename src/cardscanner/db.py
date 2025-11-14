@@ -4,7 +4,6 @@ import os
 import json
 import yaml
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 from pathlib import Path
 
 
@@ -101,7 +100,14 @@ class SimpleCardDB:
             return []
         
         query_flat = query_embedding.flatten().reshape(1, -1)
-        similarities = cosine_similarity(query_flat, self.embeddings)[0]
+        emb_norm = np.linalg.norm(self.embeddings, axis=1, keepdims=True)
+        emb_norm = np.clip(emb_norm, 1e-12, None)
+        normalized_db = self.embeddings / emb_norm
+        query_norm = np.linalg.norm(query_flat, axis=1, keepdims=True)
+        query_norm = np.clip(query_norm, 1e-12, None)
+        normalized_q = query_flat / query_norm
+        similarities = normalized_q @ normalized_db.T
+        similarities = similarities[0]
         
         # Sortiere nach Ähnlichkeit (höher = ähnlicher)
         indices = np.argsort(similarities)[::-1]

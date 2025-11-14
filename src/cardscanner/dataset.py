@@ -11,7 +11,13 @@ import torchvision.transforms as T
 from torchvision.utils import save_image
 
 from src.cardscanner.augment_cards import CameraLikeAugmentor
-from src.cardscanner.image_pipeline import crop_set_symbol, get_set_symbol_crop_cfg, build_resize_normalize_transform
+from src.cardscanner.image_pipeline import (
+    crop_set_symbol,
+    crop_card_art,
+    get_set_symbol_crop_cfg,
+    get_full_art_crop_cfg,
+    build_resize_normalize_transform,
+)
 
 
 class LRUCache(OrderedDict):
@@ -104,6 +110,7 @@ class TripletImageDataset(Dataset):
         cache_max_size: int = 1000,
         max_samples_per_epoch: Optional[int] = None,
         set_symbol_crop_cfg: Optional[dict] = None,
+        full_art_crop_cfg: Optional[dict] = None,
     ) -> None:
         """
         Dataset f-r MTG-Karten Triplet Training.
@@ -127,6 +134,17 @@ class TripletImageDataset(Dataset):
             except Exception as e:
                 print(f"[WARN] TripletImageDataset: config.yaml nicht lesbar: {e}")
                 self.set_symbol_crop_cfg = None
+        self.full_art_crop_cfg = full_art_crop_cfg
+        if self.full_art_crop_cfg is None:
+            try:
+                with open("config.yaml", "r", encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                self.full_art_crop_cfg = get_full_art_crop_cfg(cfg)
+            except Exception as e:
+                print(f"[WARN] TripletImageDataset: konnte full_art_crop_cfg nicht laden: {e}")
+                self.full_art_crop_cfg = None
+        if self.full_art_crop_cfg:
+            print(f"[INFO] Full-art Crop aktiv: {self.full_art_crop_cfg}")
         crop_target_h = 64
         crop_target_w = 160
         if self.set_symbol_crop_cfg:
@@ -243,17 +261,18 @@ class TripletImageDataset(Dataset):
             )
             # augmentations[0] ist Original, danach Augmentierungen
             for i, aug_img in enumerate(augmentations[:n_aug]):
+                full_img = crop_card_art(aug_img, self.full_art_crop_cfg)
                 full_path = os.path.join(full_dir, f"{card_id}_aug_{i:02d}.jpg")
-                aug_img.save(full_path, "JPEG", quality=85)
+                full_img.save(full_path, "JPEG", quality=85)
 
-                # Symbol-Crop aus augmentiertem Bild
                 crop_img = crop_set_symbol(aug_img, self.set_symbol_crop_cfg)
                 symbol_path = os.path.join(symbol_dir, f"{card_id}_aug_{i:02d}.jpg")
                 crop_img.save(symbol_path, "JPEG", quality=85)
         else:
             # Fallback: nur Transform-Anchor ohne Kameraaugmentor
             for i in range(n_aug):
-                aug_tensor = self.transform_anchor(img) if self.transform_anchor else T.ToTensor()(img)
+                art_img = crop_card_art(img, self.full_art_crop_cfg)
+                aug_tensor = self.transform_anchor(art_img) if self.transform_anchor else T.ToTensor()(art_img)
                 full_path = os.path.join(full_dir, f"{card_id}_aug_{i:02d}.png")
                 save_image(_denormalize_for_save(aug_tensor), full_path)
 
@@ -321,30 +340,33 @@ class TripletImageDataset(Dataset):
             p_img = self.camera_augmentor.create_camera_like_augmentations(p_img, num_augmentations=1)[-1]
             n_img = self.camera_augmentor.create_camera_like_augmentations(n_img, num_augmentations=1)[-1]
 
-        # Effektive Pipeline: Scryfall-Bild -> (optional) CameraLikeAugmentor -> Set-Symbol-Crop -> Resize/ToTensor/Normalize.
-        # NEU: Set-Symbol-Crops aus den augmentierten Bildern schneiden
+        # Artwork- und Symbol-Crops aus den augmentierten Bildern schneiden.
+        a_art_img = crop_card_art(a_img, self.full_art_crop_cfg)
+        p_art_img = crop_card_art(p_img, self.full_art_crop_cfg)
+        n_art_img = crop_card_art(n_img, self.full_art_crop_cfg)
         a_crop_img = crop_set_symbol(a_img, self.set_symbol_crop_cfg)
         p_crop_img = crop_set_symbol(p_img, self.set_symbol_crop_cfg)
         n_crop_img = crop_set_symbol(n_img, self.set_symbol_crop_cfg)
 
         # Vollbilder transformieren
         if self.transform_anchor:
-            a_full_t = self.transform_anchor(a_img)
+            a_full_t = self.transform_anchor(a_art_img)
         else:
-            a_full_t = T.ToTensor()(a_img)
+            a_full_t = T.ToTensor()(a_art_img)
 
         if self.transform_posneg:
-            p_full_t = self.transform_posneg(p_img)
-            n_full_t = self.transform_posneg(n_img)
+            p_full_t = self.transform_posneg(p_art_img)
+            n_full_t = self.transform_posneg(n_art_img)
         else:
-            p_full_t = T.ToTensor()(p_img)
-            n_full_t = T.ToTensor()(n_img)
+            p_full_t = T.ToTensor()(p_art_img)
+            n_full_t = T.ToTensor()(n_art_img)
 
         # NEU: Crops transformieren
         crop_transform = self.transform_crop or T.Compose([T.ToTensor()])
         a_crop_t = crop_transform(a_crop_img)
         p_crop_t = crop_transform(p_crop_img)
         n_crop_t = crop_transform(n_crop_img)
+
 
         label = self.card_to_idx[pos_uuid]
 

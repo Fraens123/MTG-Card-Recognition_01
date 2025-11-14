@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 MTG Card Recognition CLI
 
@@ -35,7 +35,9 @@ try:
     from .image_pipeline import (
         build_resize_normalize_transform,
         crop_set_symbol,
+        crop_card_art,
         get_set_symbol_crop_cfg,
+        get_full_art_crop_cfg,
         resolve_resize_hw,
     )
     from .embedding_utils import build_card_embedding
@@ -45,10 +47,44 @@ except ImportError:
     from src.cardscanner.image_pipeline import (
         build_resize_normalize_transform,
         crop_set_symbol,
+        crop_card_art,
         get_set_symbol_crop_cfg,
+        get_full_art_crop_cfg,
         resolve_resize_hw,
     )
     from src.cardscanner.embedding_utils import build_card_embedding
+
+
+def crop_card_roi(img: Image.Image, roi_cfg: Optional[Dict]) -> Image.Image:
+    """
+    Schneidet die MTG-Karte aus dem Pi-Cam-Bild anhand fester relativer Koordinaten.
+    roi_cfg: Dict mit x_min, y_min, x_max, y_max in [0.0, 1.0].
+    Wenn roi_cfg None ist oder unvollständig, wird das Bild unverändert zurückgegeben.
+    """
+    if not roi_cfg:
+        return img
+
+    w, h = img.size
+    try:
+        x_min = float(roi_cfg.get("x_min", 0.0))
+        y_min = float(roi_cfg.get("y_min", 0.0))
+        x_max = float(roi_cfg.get("x_max", 1.0))
+        y_max = float(roi_cfg.get("y_max", 1.0))
+    except Exception:
+        return img
+
+    x0 = int(x_min * w)
+    y0 = int(y_min * h)
+    x1 = int(x_max * w)
+    y1 = int(y_max * h)
+
+    # Bounds sichern
+    x0 = max(0, min(x0, w - 1))
+    y0 = max(0, min(y0, h - 1))
+    x1 = max(x0 + 1, min(x1, w))
+    y1 = max(y0 + 1, min(y1, h))
+
+    return img.crop((x0, y0, x1, y1))
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -64,6 +100,31 @@ def load_config(config_path: str = "config.yaml") -> dict:
 def get_inference_transforms(resize_hw: Tuple[int, int]) -> T.Compose:
     """Identische Resize/Normalize-Pipeline wie beim Embedding-Export."""
     return build_resize_normalize_transform(resize_hw)
+
+
+class CropDebugger:
+    def __init__(self, directory: Optional[Path], limit: int):
+        self.directory = directory
+        self.limit = max(0, int(limit or 0))
+        self.count = 0
+        if self.limit > 0 and self.directory:
+            self.directory.mkdir(parents=True, exist_ok=True)
+
+    def record(self, card_img: Optional[Image.Image], art_img: Image.Image, symbol_img: Image.Image, source: str):
+        if self.limit <= 0 or self.directory is None or self.count >= self.limit:
+            return
+        stem = Path(source).stem
+        art_path = self.directory / f"{stem}_art_{self.count:02d}.png"
+        symbol_path = self.directory / f"{stem}_symbol_{self.count:02d}.png"
+        card_path = self.directory / f"{stem}_card_{self.count:02d}.png" if card_img else None
+        try:
+            art_img.save(art_path)
+            symbol_img.save(symbol_path)
+            if card_img and card_path:
+                card_img.save(card_path)
+            self.count += 1
+        except Exception as exc:
+            print(f"[WARN] Konnte Kamera-Crop nicht speichern ({source}): {exc}")
 
 
 def create_comparison_plot(
@@ -222,15 +283,26 @@ def search_camera_image(
     camera_img_path: str,
     device: torch.device,
     config: dict,
+    art_crop_cfg: Optional[dict],
     crop_cfg: Optional[dict],
+    debug_recorder=None,
 ) -> Tuple[Optional[Dict], float, float]:
     """Berechnet das Query-Embedding und sucht den besten Match in der Datenbank."""
     start_time = time.time()
 
     with Image.open(camera_img_path) as img:
         rgb = img.convert("RGB")
-        full_tensor = transform(rgb).unsqueeze(0).to(device)
-        crop_img = crop_set_symbol(rgb, crop_cfg)
+        # NEU: Zuerst die Karte per fester ROI aus dem Pi-Cam-Bild schneiden
+        camera_cfg = config.get("camera", {})
+        card_roi_cfg = camera_cfg.get("card_roi", None)
+        card_img = crop_card_roi(rgb, card_roi_cfg)
+
+        # DANN wie bisher: Artwork- und Set-Symbol-Crop auf der normierten Karte
+        art_img = crop_card_art(card_img, art_crop_cfg)
+        crop_img = crop_set_symbol(card_img, crop_cfg)
+        if debug_recorder:
+            debug_recorder(card_img, art_img, crop_img, camera_img_path)
+        full_tensor = transform(art_img).unsqueeze(0).to(device)
         crop_tensor = crop_transform(crop_img).unsqueeze(0).to(device)
 
     with torch.no_grad():
@@ -288,6 +360,7 @@ def test_all_camera_images(
     transform = get_inference_transforms(resize_hw)
     print(f"[INFO] Inference-Bildgroesse (Breite x Hoehe): {target_width}x{target_height}")
 
+    art_cfg = get_full_art_crop_cfg(config)
     crop_cfg = get_set_symbol_crop_cfg(config)
     crop_height = crop_cfg.get("target_height", 64) if crop_cfg else 64
     crop_width = crop_cfg.get("target_width", 160) if crop_cfg else 160
@@ -314,6 +387,12 @@ def test_all_camera_images(
     total_searches = len(camera_files)
 
     print("\n[RUN] Starte Similarity-Search fuer alle Camera-Bilder ...")
+    debug_cfg = config.get("debug", {})
+    crop_dump = CropDebugger(
+        Path(debug_cfg.get("camera_crop_dump_dir", "")) if debug_cfg.get("camera_crop_dump_dir") else None,
+        debug_cfg.get("camera_crop_dump_count", 0),
+    )
+
     for idx, camera_file in enumerate(tqdm(camera_files, desc="Camera-Bilder", unit="img"), start=1):
         try:
             print(f"\n[{idx}/{total_searches}] [RUN] Verarbeite: {camera_file.name}")
@@ -325,7 +404,9 @@ def test_all_camera_images(
                 str(camera_file),
                 device,
                 config,
+                art_cfg,
                 crop_cfg,
+                crop_dump.record if crop_dump.directory else None,
             )
             total_time += search_time
             match_scores.append(float(similarity_score))

@@ -26,6 +26,7 @@ from src.cardscanner.image_pipeline import (
     build_resize_normalize_transform,
     detect_image_size,
     get_set_symbol_crop_cfg,
+    get_full_art_crop_cfg,
 )
 
 
@@ -260,6 +261,7 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
     print(f"[INFO] Training resize (W x H): {target_width}x{target_height}")
 
     crop_cfg = get_set_symbol_crop_cfg(config) or {}
+    art_crop_cfg = get_full_art_crop_cfg(config)
     crop_resize_hw = (
         crop_cfg.get("target_height", 64),
         crop_cfg.get("target_width", 160),
@@ -308,6 +310,7 @@ def train(config: dict, images_dir: str, camera_dir: str | None = None) -> nn.Mo
         max_samples_per_epoch=max_samples,
         transform_crop=crop_transform,
         set_symbol_crop_cfg=crop_cfg,
+        full_art_crop_cfg=art_crop_cfg,
     )
 
     print(f"\n[INFO] Trainingsdaten: {len(dataset.card_ids)} Karten (Scryfall)")
