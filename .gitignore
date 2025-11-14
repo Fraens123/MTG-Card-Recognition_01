@@ -5,6 +5,7 @@ output_matches/*.json
 *.sqlite
 *.db
 data/cards.json
+data/cards.json.backup
 # Ignore all image files everywhere
 *.jpg
 *.jpeg
