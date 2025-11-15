@@ -1,7 +1,9 @@
-﻿import argparse
+import argparse
 import os
 import random
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Tuple
 
@@ -41,15 +43,30 @@ def _compute_losses(
     return total, loss_full.detach(), loss_symbol.detach()
 
 
+def _run_pipeline_step(cmd: list[str], label: str) -> Tuple[float, int]:
+    print(f"[PIPELINE] Starte {label}: {' '.join(cmd)}")
+    start = time.time()
+    result = subprocess.run(cmd, check=False)
+    duration = time.time() - start
+    if result.returncode == 0:
+        print(f"[PIPELINE] {label} abgeschlossen nach {duration:.1f}s ({duration/60:.2f} min)")
+    else:
+        print(f"[WARN] {label} fehlgeschlagen (Returncode {result.returncode}) nach {duration:.1f}s")
+    return duration, result.returncode
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
     train_cfg = get_training_config(cfg, "coarse")
+    pipeline_cfg = cfg.get("training", {}).get("pipeline", {})
+    auto_pipeline = bool(pipeline_cfg.get("auto_run_fine_and_export", False))
     val_cfg = train_cfg.get("validation", {})
     val_enabled = bool(val_cfg.get("enabled", False))
     val_split = float(val_cfg.get("split_ratio", 0.0))
     debug_cfg = cfg.get("debug", {})
     debug_enabled = bool(debug_cfg.get("enable", False))
+    total_start = time.time()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Coarse-Training auf {device}")
@@ -142,6 +159,7 @@ def main() -> None:
     best_state = None
 
     epochs = int(train_cfg.get("epochs", 1))
+    coarse_start_time = time.time()
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
@@ -232,6 +250,8 @@ def main() -> None:
             best_state = {k: v.cpu() for k, v in model.state_dict().items()}
 
     writer.close()
+    coarse_duration = time.time() - coarse_start_time
+    print(f"[TIME] Coarse-Training Dauer: {coarse_duration:.1f}s ({coarse_duration/60:.2f} min)")
 
     if best_state is None:
         raise RuntimeError("Training fehlgeschlagen: keine validen Gewichte gefunden.")
@@ -244,9 +264,22 @@ def main() -> None:
     save_encoder(model, out_path, card_ids=dataset.card_ids)
     print(f"[INFO] Bestes Modell gespeichert unter {out_path}")
     print("[NEXT] Fine-Tuning starten: python -m src.training.train_fine --config config.yaml")
+    if auto_pipeline:
+        print("[PIPELINE] Automatischer Lauf aktiviert: Fine-Training + Embedding-Export")
+        fine_cmd = [sys.executable, "-m", "src.training.train_fine", "--config", args.config]
+        _, fine_rc = _run_pipeline_step(fine_cmd, "Fine-Training")
+        if fine_rc == 0:
+            export_cmd = [sys.executable, "-m", "src.training.export_embeddings", "--config", args.config]
+            _run_pipeline_step(export_cmd, "Embedding-Export")
+        else:
+            print("[PIPELINE] Fine-Training fehlgeschlagen, Embedding-Export wird uebersprungen.")
+
+    total_duration = time.time() - total_start
+    print(f"[TIME] Gesamtzeit: {total_duration:.1f}s ({total_duration/60:.2f} min)")
 
 
 if __name__ == "__main__":
     main()
+
 
 

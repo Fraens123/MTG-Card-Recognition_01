@@ -1,152 +1,234 @@
 #!/usr/bin/env python3
-"""
-Script zum Herunterladen von MTG-Karten von Scryfall für das Training.
+r"""
+Lädt für jede Karte aus der CSV:
+- alle Scryfall-Prints
+- in allen Sprachen
+und speichert die Bilder nach:
+C:\Users\Fraens\Documents\Fraens\Youtube\TCG Sorter\CNN-Test\CardScannerCNN_02\data\All_image_prints
 """
 
+import csv
 import os
-import requests
-import json
-from pathlib import Path
-from urllib.parse import urlparse
 import time
+import argparse
+import re
+from pathlib import Path
+
+import requests
 
 
-def download_image(url: str, filepath: str) -> bool:
-    """Lädt ein Bild von einer URL herunter"""
-    try:
-        response = requests.get(url, stream=True, timeout=30)
-        response.raise_for_status()
-        
-        with open(filepath, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
-        return True
-    except Exception as e:
-        print(f"❌ Fehler beim Herunterladen {url}: {e}")
-        return False
+SCRYFALL_API_BASE = "https://api.scryfall.com"
+
+# >>> FESTER OUTPUT-PFAD, wie gewünscht <<<
+OUTPUT_DIR = Path(
+    r"C:\Users\Fraens\Documents\Fraens\Youtube\TCG Sorter\CNN-Test\CardScannerCNN_02\data\All_image_prints"
+)
 
 
-def search_card_scryfall(card_name: str) -> dict:
-    """Sucht eine Karte auf Scryfall"""
-    try:
-        # Zuerst mit exaktem Namen versuchen
-        url = f"https://api.scryfall.com/cards/named?exact={card_name}"
-        response = requests.get(url, timeout=10)
-        
-        if response.status_code == 404:
-            # Falls nicht gefunden, mit Fuzzy Search versuchen
-            url = f"https://api.scryfall.com/cards/named?fuzzy={card_name}"
-            response = requests.get(url, timeout=10)
-        
-        response.raise_for_status()
-        return response.json()
-    
-    except Exception as e:
-        print(f"❌ Karte '{card_name}' nicht gefunden: {e}")
+def slugify_name(name: str) -> str:
+    name = name.strip().lower()
+    name = re.sub(r"[^\w\s-]", "", name)
+    name = re.sub(r"\s+", "_", name)
+    return name[:80] or "card"
+
+
+def read_csv_unique_keys(csv_path: Path):
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    if not rows:
+        raise RuntimeError(f"CSV {csv_path} ist leer.")
+
+    fieldnames = {c.lower(): c for c in reader.fieldnames or []}
+
+    def col_exists(name: str) -> bool:
+        return name.lower() in fieldnames
+
+    keys = {}
+
+    if col_exists("oracle_id"):
+        col = fieldnames["oracle_id"]
+        for row in rows:
+            val = row.get(col, "").strip()
+            if val:
+                keys[("oracle_id", val)] = {
+                    "display_name": row.get(fieldnames.get("name", col), val)
+                }
+        key_type = "oracle_id"
+
+    elif col_exists("id") or col_exists("scryfall_id"):
+        col = fieldnames.get("id") or fieldnames["scryfall_id"]
+        for row in rows:
+            val = row.get(col, "").strip()
+            if val:
+                keys[("id", val)] = {
+                    "display_name": row.get(fieldnames.get("name", col), val)
+                }
+        key_type = "id"
+
+    elif col_exists("name"):
+        col = fieldnames["name"]
+        for row in rows:
+            val = row.get(col, "").strip()
+            if val:
+                keys[("name", val)] = {"display_name": val}
+        key_type = "name"
+
+    else:
+        raise RuntimeError("CSV enthält keine Spalten: oracle_id / id / name")
+
+    print(f"[INFO] Eindeutige Karten: {len(keys)} (Schlüsseltyp: {key_type})")
+    return keys
+
+
+def fetch_card_by_id(session: requests.Session, card_id: str) -> dict:
+    url = f"{SCRYFALL_API_BASE}/cards/{card_id}"
+    r = session.get(url)
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_card_by_oracle_id(session: requests.Session, oracle_id: str) -> dict:
+    params = {
+        "q": f"oracleid:{oracle_id}",
+        "order": "released",
+        "unique": "prints",
+        "include_multilingual": "true",
+        "page": 1,
+    }
+    r = session.get(f"{SCRYFALL_API_BASE}/cards/search", params=params)
+    r.raise_for_status()
+    data = r.json()
+    if not data.get("data"):
+        raise RuntimeError(f"Keine Karte für oracle_id={oracle_id}")
+    return data["data"][0]
+
+
+def fetch_card_by_name(session: requests.Session, name: str) -> dict:
+    r = session.get(f"{SCRYFALL_API_BASE}/cards/named", params={"exact": name})
+    r.raise_for_status()
+    return r.json()
+
+
+def iter_prints(session: requests.Session, prints_search_uri: str):
+    # Multilingual erzwingen
+    if "?" in prints_search_uri:
+        url = prints_search_uri + "&include_multilingual=true&unique=prints"
+    else:
+        url = prints_search_uri + "?include_multilingual=true&unique=prints"
+
+    while url:
+        r = session.get(url)
+        r.raise_for_status()
+        payload = r.json()
+
+        for card in payload.get("data", []):
+            yield card
+
+        url = payload.get("next_page") if payload.get("has_more") else None
+        time.sleep(0.1)
+
+
+def get_image_uri(card: dict):
+    if "image_uris" in card:
+        img_uris = card["image_uris"]
+    elif "card_faces" in card and card["card_faces"]:
+        face = card["card_faces"][0]
+        img_uris = face.get("image_uris", {})
+    else:
         return None
 
-
-def download_scryfall_card(card_name: str, output_dir: str) -> bool:
-    """Lädt eine einzelne Karte von Scryfall herunter"""
-    print(f"🔍 Suche Karte: {card_name}")
-    
-    card_data = search_card_scryfall(card_name)
-    if not card_data:
-        return False
-    
-    # Extrahiere Karteninformationen
-    card_uuid = card_data.get('id')
-    set_code = card_data.get('set', 'UNK').upper()
-    collector_number = card_data.get('collector_number', '000')
-    name = card_data.get('name', card_name).replace(' ', '_').replace(',', '').replace("'", '')
-    
-    # Image URL ermitteln (bevorzuge normal, falls nicht vorhanden dann large)
-    image_uris = card_data.get('image_uris', {})
-    if not image_uris and 'card_faces' in card_data:
-        # Doppelseitige Karten - nimm die erste Seite
-        image_uris = card_data['card_faces'][0].get('image_uris', {})
-    
-    image_url = image_uris.get('normal') or image_uris.get('large')
-    if not image_url:
-        print(f"❌ Kein Kartenbild gefunden für {card_name}")
-        return False
-    
-    # Dateiname erstellen: {set}_{number}_{name}_{uuid}.jpg
-    filename = f"{set_code}_{collector_number}_{name}_{card_uuid}.jpg"
-    filepath = os.path.join(output_dir, filename)
-    
-    # Bild herunterladen
-    print(f"⬇️  Lade herunter: {filename}")
-    success = download_image(image_url, filepath)
-    
-    if success:
-        print(f"✅ Erfolgreich: {filename}")
-        return True
-    else:
-        return False
+    for key in ["border_crop", "png", "large", "normal", "small"]:
+        if key in img_uris:
+            return img_uris[key]
+    return None
 
 
-def get_card_names_from_camera_images(camera_dir: str) -> list:
-    """Extrahiert Kartennamen aus camera_images Ordner"""
-    card_names = []
-    camera_path = Path(camera_dir)
-    
-    if not camera_path.exists():
-        print(f"❌ Camera-Ordner nicht gefunden: {camera_dir}")
-        return card_names
-    
-    for image_file in camera_path.glob("*.jpg"):
-        # Extrahiere Kartenname (entferne _01.jpg am Ende)
-        name_part = image_file.stem
-        if name_part.endswith('_01'):
-            name_part = name_part[:-3]
-        
-        # Ersetze Unterstriche durch Leerzeichen für Scryfall-Suche
-        card_name = name_part.replace('_', ' ')
-        card_names.append(card_name)
-    
-    return card_names
+def download_image(session: requests.Session, url: str, out_path: Path):
+    if out_path.exists():
+        return
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    r = session.get(url, stream=True)
+    r.raise_for_status()
+    with out_path.open("wb") as f:
+        for chunk in r.iter_content(8192):
+            if chunk:
+                f.write(chunk)
 
 
 def main():
-    """Hauptfunktion"""
-    # Ausgabeordner erstellen
-    output_dir = "data/scryfall_images"
-    camera_dir = "data/camera_images"
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Kartennamen aus camera_images extrahieren
-    card_names = get_card_names_from_camera_images(camera_dir)
-    
-    if not card_names:
-        print("❌ Keine Karten im camera_images Ordner gefunden!")
-        return
-    
-    print(f"🚀 Lade {len(card_names)} Karten von Scryfall herunter...")
-    print(f"📁 Quelle: {camera_dir}")
-    print(f"📁 Ziel: {output_dir}")
-    print(f"🃏 Gefundene Karten: {', '.join(card_names)}")
-    
-    successful = 0
-    
-    for i, card_name in enumerate(card_names, 1):
-        print(f"\n[{i}/{len(card_names)}] {card_name}")
-        
-        if download_scryfall_card(card_name, output_dir):
-            successful += 1
-        
-        # Kurze Pause zwischen Downloads (Scryfall Rate Limiting)
-        if i < len(card_names):
-            time.sleep(1)
-    
-    print(f"\n📊 Download abgeschlossen!")
-    print(f"✅ Erfolgreich: {successful}/{len(card_names)} Karten")
-    
-    if successful > 0:
-        print(f"📁 Scryfall-Bilder gespeichert in: {output_dir}")
-    else:
-        print("❌ Keine Karten heruntergeladen")
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--csv",
+        type=str,
+        default=r"C:\Users\Fraens\Documents\Fraens\Youtube\TCG Sorter\CNN-Test\CardScannerCNN_02\data\TCG-Sorter.csv",
+    )
+    parser.add_argument("--delay", type=float, default=0.12)
+    args = parser.parse_args()
+
+    csv_path = Path(args.csv)
+    if not csv_path.exists():
+        raise FileNotFoundError(f"CSV nicht gefunden: {csv_path}")
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    keys = read_csv_unique_keys(csv_path)
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": "TCG-Sorter/1.0"})
+
+    downloaded_ids = set()
+
+    for (key_type, value), meta in keys.items():
+        name_display = meta.get("display_name", value)
+        print(f"\n[INFO] Processing: {name_display} [{key_type}={value}]")
+
+        try:
+            if key_type == "oracle_id":
+                base_card = fetch_card_by_oracle_id(session, value)
+            elif key_type == "id":
+                base_card = fetch_card_by_id(session, value)
+            else:
+                base_card = fetch_card_by_name(session, value)
+
+            prints_uri = base_card.get("prints_search_uri")
+            if not prints_uri:
+                print(f"[WARN] Kein prints_search_uri für {name_display}")
+                continue
+
+            for pc in iter_prints(session, prints_uri):
+                cid = pc.get("id")
+                if not cid or cid in downloaded_ids:
+                    continue
+
+                set_code = pc.get("set", "xx")
+                nr = pc.get("collector_number", "0")
+                lang = pc.get("lang", "xx")
+                cname = pc.get("name", "unknown")
+
+                img_url = get_image_uri(pc)
+                if not img_url:
+                    print(f"[WARN] Kein Bild für {cname} / {set_code} / {nr} / {lang}")
+                    continue
+
+                # Dateiname
+                slug = slugify_name(cname)
+                filename = f"{set_code}_{nr}_{slug}_{lang}_{cid}.jpg"
+
+                out_path = OUTPUT_DIR / filename
+                print(f"   [DL] {filename}")
+
+                download_image(session, img_url, out_path)
+                downloaded_ids.add(cid)
+
+                time.sleep(args.delay)
+
+        except Exception as e:
+            print(f"[ERROR] {name_display}: {e}")
+            continue
+
+    print(f"\n[OK] Fertig! {len(downloaded_ids)} Bilder heruntergeladen.")
 
 
 if __name__ == "__main__":
