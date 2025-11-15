@@ -13,8 +13,8 @@ import yaml
 from PIL import Image
 
 sys.path.insert(0, ".")
-from src.cardscanner.model import load_encoder  # noqa: E402
-from src.cardscanner.dataset import crop_set_symbol  # noqa: E402
+from src.core.model_builder import load_encoder  # noqa: E402
+from src.core.image_ops import crop_set_symbol  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -118,15 +118,15 @@ def load_cards_with_embeddings(cards_json: Path) -> Tuple[List[dict], List[List[
         payload = json.load(fh)
     if not isinstance(payload, dict) or "cards" not in payload or "embeddings" not in payload:
         raise ValueError(
-            f"{cards_json} enth\u00e4lt keine 'cards' + 'embeddings'. "
-            "Bitte generate_embeddings.py ausf\u00fchren oder --source images nutzen."
+            f"{cards_json} enthält keine 'cards' + 'embeddings'. "
+            "Bitte export_embeddings.py ausführen oder --source images nutzen."
         )
     cards = payload["cards"]
     embeddings = payload["embeddings"]
     if len(cards) != len(embeddings):
         raise ValueError(
             f"Anzahl Karten ({len(cards)}) passt nicht zu Embeddings ({len(embeddings)}). "
-            "Bitte generate_embeddings.py neu ausf\u00fchren."
+            "Bitte export_embeddings.py neu ausführen."
         )
     return cards, embeddings
 
@@ -143,7 +143,7 @@ def build_transform(target_size: Sequence[int]) -> T.Compose:
 
 def encode_search_embedding(model, image: Image.Image, transform: T.Compose, device: torch.device):
     """
-    Repliziert die Embedding-Pipeline aus generate_embeddings.py:
+    Repliziert die Embedding-Pipeline aus export_embeddings.py:
     full + crop je normalisieren, konkatten, erneut normalisieren.
     """
     tensor_full = transform(image).unsqueeze(0).to(device)

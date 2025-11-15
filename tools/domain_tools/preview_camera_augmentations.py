@@ -14,8 +14,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.cardscanner.augment_cards import CameraLikeAugmentor
-from src.cardscanner.image_pipeline import (
+from src.core.augmentations import CameraLikeAugmentor
+from src.core.image_ops import (
     crop_card_art,
     crop_set_symbol,
     get_full_art_crop_cfg,

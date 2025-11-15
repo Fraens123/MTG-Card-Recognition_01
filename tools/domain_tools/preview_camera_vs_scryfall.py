@@ -23,7 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.cardscanner.image_pipeline import (  # type: ignore  # pylint: disable=import-error
+from src.core.image_ops import (
     crop_card_art,
     crop_set_symbol,
     get_full_art_crop_cfg,
