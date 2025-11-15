@@ -1,5 +1,6 @@
 ﻿import argparse
 import os
+import random
 import sys
 from pathlib import Path
 from typing import Tuple
@@ -24,19 +25,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fine-Training mit Triplet-Loss.")
     parser.add_argument("--config", type=str, default="config.yaml", help="Pfad zur Konfigurationsdatei")
     return parser.parse_args()
-
-
-def _build_dataloader(dataset: TripletImageDataset, train_cfg: dict) -> DataLoader:
-    batch_size = int(train_cfg.get("batch_size", 32))
-    num_workers = int(train_cfg.get("num_workers", min(8, os.cpu_count() or 2)))
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True,
-        drop_last=False,
-    )
 
 
 def _freeze_backbone_layers(backbone: nn.Module, freeze_ratio: float) -> None:
@@ -77,19 +65,72 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
     train_cfg = get_training_config(cfg, "fine")
+    val_cfg = train_cfg.get("validation", {})
+    val_enabled = bool(val_cfg.get("enabled", False))
+    val_split = float(val_cfg.get("split_ratio", 0.0))
+    debug_cfg = cfg.get("debug", {})
+    debug_enabled = bool(debug_cfg.get("enable", False))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Fine-Training auf {device}")
 
     dataset = TripletImageDataset(cfg)
     use_camera = getattr(dataset, "use_camera_images", True)
-    print(f"[DATA] Karten={len(dataset.card_ids)} | Samples≈{len(dataset)} | Kamera-Bilder={'aktiv' if use_camera else 'deaktiviert'}")
-    preview_dir = cfg.get("debug", {}).get("augmentation_preview_dir")
-    if preview_dir:
+    print(f"[DATA] Karten={len(dataset.card_ids)} | Samples~{len(dataset)} | Kamera-Bilder={'aktiv' if use_camera else 'deaktiviert'}")
+    preview_dir = debug_cfg.get("augmentation_preview_dir")
+    if debug_enabled and preview_dir:
         print(f"[DEBUG] Schreibe Triplet-Augmentierungen nach {preview_dir}")
         dataset.save_augmentations_of_first_card(preview_dir)
-    dataloader = _build_dataloader(dataset, train_cfg)
-    print(f"[LOAD] batch_size={train_cfg.get('batch_size')} | Schritte pro Epoche={len(dataloader)}")
+    train_dataset = dataset
+    val_dataset = None
+
+    if val_enabled and 0.0 < val_split < 1.0 and len(dataset.card_ids) > 1:
+        card_ids = list(dataset.card_ids)
+        rng = random.Random(int(val_cfg.get("seed", 42)))
+        rng.shuffle(card_ids)
+        val_card_count = max(1, int(len(card_ids) * val_split))
+        if val_card_count >= len(card_ids):
+            val_card_count = len(card_ids) - 1
+        if val_card_count > 0:
+            val_card_ids = set(card_ids[:val_card_count])
+            train_card_ids = [card_id for card_id in card_ids if card_id not in val_card_ids]
+            train_dataset = TripletImageDataset(cfg, allowed_card_ids=train_card_ids)
+            val_dataset = TripletImageDataset(cfg, allowed_card_ids=val_card_ids) if val_card_ids else None
+            if val_dataset is not None:
+                print(f"[SPLIT] Karten Train={len(train_card_ids)} | Val={len(val_card_ids)}")
+        else:
+            print("[WARN] Val-Split konnte nicht erstellt werden (zu wenige Karten).")
+    batch_size = int(train_cfg.get("batch_size", 32))
+    configured_workers = int(train_cfg.get("num_workers", 4))
+    max_workers = max(1, os.cpu_count() or 2)
+    num_workers = max(0, min(configured_workers, max_workers))
+    if num_workers != configured_workers:
+        print(f"[LOAD] num_workers von {configured_workers} auf {num_workers} angepasst (Systemlimit).")
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=True,
+    )
+
+    val_loader = None
+    if val_dataset is not None and len(val_dataset) > 0:
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True,
+            drop_last=False,
+        )
+
+    print(
+        f"[LOAD] batch_size={batch_size} | Train-Schritte={len(train_loader)} "
+        f"| Val-Schritte={len(val_loader) if val_loader else 0}"
+    )
 
     coarse_path = os.path.join(cfg["paths"]["models_dir"], "encoder_coarse.pt")
     if not os.path.exists(coarse_path):
@@ -103,6 +144,17 @@ def main() -> None:
     _freeze_model(model, freeze_ratio)
 
     optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=float(train_cfg.get("lr", 1e-4)))
+    scheduler_cfg = train_cfg.get("scheduler", {})
+    scheduler = None
+    if scheduler_cfg.get("use", False):
+        sched_type = scheduler_cfg.get("type", "step").lower()
+        if sched_type == "step":
+            step_size = int(scheduler_cfg.get("step_size", 10))
+            gamma = float(scheduler_cfg.get("gamma", 0.5))
+            scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+        elif sched_type == "cosine":
+            t_max = int(scheduler_cfg.get("cosine_t_max", train_cfg.get("epochs", 20)))
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max)
     triplet_loss = nn.TripletMarginLoss(margin=float(train_cfg.get("margin", 0.35)), p=2)
     ce_weight_full = float(train_cfg.get("ce_full_weight", 0.3))
     ce_weight_symbol = float(train_cfg.get("ce_symbol_weight", 1.0))
@@ -124,7 +176,9 @@ def main() -> None:
         running_ce = 0.0
         running_full = 0.0
         running_symbol = 0.0
-        for batch in tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}"):
+        running_correct = 0
+        running_samples = 0
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs}"):
             (
                 anchor_full,
                 anchor_symbol,
@@ -133,7 +187,14 @@ def main() -> None:
                 neg_full,
                 neg_symbol,
                 labels,
-            ) = [b.to(device) for b in batch]
+            ) = batch
+            anchor_full = anchor_full.to(device, non_blocking=True)
+            anchor_symbol = anchor_symbol.to(device, non_blocking=True)
+            pos_full = pos_full.to(device, non_blocking=True)
+            pos_symbol = pos_symbol.to(device, non_blocking=True)
+            neg_full = neg_full.to(device, non_blocking=True)
+            neg_symbol = neg_symbol.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
             optimizer.zero_grad()
 
             anchor_emb, anchor_logits = model(anchor_full, anchor_symbol, return_logits=True)
@@ -152,25 +213,76 @@ def main() -> None:
             running_ce += loss_ce_total.item()
             running_full += loss_ce_full.item()
             running_symbol += loss_ce_symbol.item()
+            logits_full, _ = anchor_logits
+            if logits_full is not None:
+                preds = logits_full.argmax(dim=1)
+                running_correct += (preds == labels).sum().item()
+            running_samples += labels.size(0)
 
-        avg_triplet = running_triplet / len(dataloader)
-        avg_ce = running_ce / len(dataloader)
-        avg_full = running_full / len(dataloader)
-        avg_symbol = running_symbol / len(dataloader)
+        avg_triplet = running_triplet / len(train_loader)
+        avg_ce = running_ce / len(train_loader)
+        avg_full = running_full / len(train_loader)
+        avg_symbol = running_symbol / len(train_loader)
         total = avg_triplet + avg_ce
+        train_acc = running_correct / max(1, running_samples)
 
         writer.add_scalar("loss/triplet", avg_triplet, epoch)
         writer.add_scalar("loss/ce_total", avg_ce, epoch)
         writer.add_scalar("loss/ce_full", avg_full, epoch)
         writer.add_scalar("loss/ce_symbol", avg_symbol, epoch)
         writer.add_scalar("loss/total", total, epoch)
+        writer.add_scalar("metrics/train_accuracy", train_acc, epoch)
+
+        val_loss = None
+        val_acc = None
+        if val_loader is not None:
+            model.eval()
+            v_loss = 0.0
+            v_correct = 0
+            v_samples = 0
+            with torch.no_grad():
+                for batch in val_loader:
+                    anchor_full = batch[0].to(device, non_blocking=True)
+                    anchor_symbol = batch[1].to(device, non_blocking=True)
+                    labels = batch[-1].to(device, non_blocking=True)
+                    _, logits = model(anchor_full, anchor_symbol, return_logits=True)
+                    ce_total, _, _ = _compute_losses(
+                        logits, labels, ce_weight_full, ce_weight_symbol, ce_loss
+                    )
+                    v_loss += ce_total.item()
+
+                    logits_full, _ = logits
+                    if logits_full is not None:
+                        preds = logits_full.argmax(dim=1)
+                        v_correct += (preds == labels).sum().item()
+                    v_samples += labels.size(0)
+
+            val_loss = v_loss / len(val_loader)
+            val_acc = v_correct / max(1, v_samples)
+            writer.add_scalar("val/loss_ce", val_loss, epoch)
+            writer.add_scalar("val/accuracy", val_acc, epoch)
+            model.train()
+
+        if scheduler is not None:
+            scheduler.step()
+        current_lr = optimizer.param_groups[0]["lr"]
+        writer.add_scalar("lr/current", current_lr, epoch)
+
         print(
             f"[Epoch {epoch + 1}] total={total:.4f} triplet={avg_triplet:.4f} "
-            f"CE={avg_ce:.4f} (full={avg_full:.4f}, symbol={avg_symbol:.4f})"
+            f"CE={avg_ce:.4f} (full={avg_full:.4f}, symbol={avg_symbol:.4f}) "
+            f"trainAcc={train_acc:.4f}"
+            + (
+                f" | valCE={val_loss:.4f} valAcc={val_acc:.4f}"
+                if val_loss is not None and val_acc is not None
+                else ""
+            )
+            + f" | lr={current_lr:.6f}"
         )
 
-        if total < best_loss:
-            best_loss = total
+        monitored = val_loss if val_loss is not None else total
+        if monitored < best_loss:
+            best_loss = monitored
             best_state = {k: v.cpu() for k, v in model.state_dict().items()}
 
     writer.close()

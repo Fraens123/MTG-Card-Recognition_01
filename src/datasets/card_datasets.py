@@ -63,6 +63,20 @@ class AddGaussianNoise:
         return tensor
 
 
+class DatasetSubset(Dataset):
+    """Einfacher Wrapper, um ein existierendes Dataset in Train/Val zu splitten."""
+
+    def __init__(self, base: Dataset, indices: List[int]):
+        self.base = base
+        self.indices = list(indices)
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, idx: int):
+        return self.base[self.indices[idx]]
+
+
 def _size_to_hw(size_cfg: Optional[Iterable[int]]) -> Tuple[int, int]:
     if not size_cfg:
         return 320, 224
@@ -171,7 +185,11 @@ class CoarseDataset(Dataset):
         self.card_ids = sorted(self.card_to_paths.keys())
         self.card_to_idx = {card_id: idx for idx, card_id in enumerate(self.card_ids)}
         self.samples = [(card_id, path) for card_id, paths in self.card_to_paths.items() for path in paths]
-        self.image_cache = LRUCache(max_size=coarse_cfg.get("cache_max_size", 0))
+        cache_size = 0
+        if coarse_cfg.get("cache_images", False):
+            cache_size = int(coarse_cfg.get("cache_size", 2048))
+        self.image_cache = LRUCache(max_size=cache_size)
+        self.sample_card_ids = [card_id for card_id, _ in self.samples]
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -210,10 +228,10 @@ class CoarseDataset(Dataset):
 
 class TripletImageDataset(Dataset):
     """
-    Triplet-Dataset f�r das Fine-Tuning mit schwerer Kamera-Augmentierung.
+    Triplet-Dataset fuer das Fine-Tuning mit schwerer Kamera-Augmentierung.
     """
 
-    def __init__(self, cfg: Dict):
+    def __init__(self, cfg: Dict, allowed_card_ids: Optional[Iterable[str]] = None):
         self.cfg = cfg
         self.paths = cfg.get("paths", {})
         self.images_cfg = cfg.get("images", {})
@@ -237,11 +255,20 @@ class TripletImageDataset(Dataset):
         elif not self.use_camera_images:
             print("[INFO] TripletDataset: Kamera-Bilder werden explizit nicht verwendet (use_camera_images=false).")
 
+        if allowed_card_ids is not None:
+            allowed_set = {card_id for card_id in allowed_card_ids if card_id in self.card_to_paths}
+            if not allowed_set:
+                raise ValueError("TripletDataset: card_filter ergab keine ueberschneidenden Karten.")
+            self.card_to_paths = {card_id: self.card_to_paths[card_id] for card_id in allowed_set}
+
         self.card_ids = sorted(self.card_to_paths.keys())
         self.card_to_idx = {card_id: idx for idx, card_id in enumerate(self.card_ids)}
         self.total_images = sum(len(p) for p in self.card_to_paths.values())
         self.max_triplets = int(fine_cfg.get("max_samples_per_epoch", self.total_images)) or self.total_images
-        self.image_cache = LRUCache(max_size=fine_cfg.get("cache_max_size", 0))
+        cache_size = 0
+        if fine_cfg.get("cache_images", False):
+            cache_size = int(fine_cfg.get("cache_size", 2048))
+        self.image_cache = LRUCache(max_size=cache_size)
 
         self.camera_augmentor: Optional[CameraLikeAugmentor] = None
         self.camera_aug_repeats = max(1, int(round(augment_cfg.get("camera_like_strength", 1))))

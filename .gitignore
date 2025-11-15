@@ -112,3 +112,7 @@ Thumbs.db
 *.tar.gz
 *.rar
 *.7z
+embeddings/card_embeddings.json
+tools/visualization/projector_vectors.tsv
+tools/visualization/projector_metadata.tsv
+tools/visualization/projector_config.pbtxt

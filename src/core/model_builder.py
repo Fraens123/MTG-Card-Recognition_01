@@ -86,8 +86,13 @@ class CardEncoder(nn.Module):
         return embedding
 
 
-def build_encoder_model(cfg: Dict, num_classes: Optional[int] = None) -> CardEncoder:
+def build_card_encoder(cfg: Dict, num_classes: Optional[int] = None) -> CardEncoder:
     return CardEncoder(cfg, num_classes=num_classes)
+
+
+def build_encoder_model(cfg: Dict, num_classes: Optional[int] = None) -> CardEncoder:
+    """Rueckwaertskompatibler Alias fuer build_card_encoder."""
+    return build_card_encoder(cfg, num_classes=num_classes)
 
 
 def load_encoder(
