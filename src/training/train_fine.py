@@ -45,20 +45,24 @@ def _freeze_model(model: nn.Module, freeze_ratio: float) -> None:
         return
     _freeze_backbone_layers(model.backbone_full, freeze_ratio)
     _freeze_backbone_layers(model.backbone_symbol, freeze_ratio)
+    _freeze_backbone_layers(model.backbone_name, freeze_ratio)
 
 
 def _compute_losses(
-    logits: Tuple[torch.Tensor, torch.Tensor],
+    logits: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     labels: torch.Tensor,
     ce_full_weight: float,
     ce_symbol_weight: float,
+    ce_name_weight: float,
     criterion: nn.Module,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    logits_full, logits_symbol = logits
-    loss_full = criterion(logits_full, labels) if logits_full is not None else torch.zeros(1, device=labels.device)
-    loss_symbol = criterion(logits_symbol, labels) if logits_symbol is not None else torch.zeros(1, device=labels.device)
-    combined = ce_full_weight * loss_full + ce_symbol_weight * loss_symbol
-    return combined, loss_full.detach(), loss_symbol.detach()
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    logits_full, logits_symbol, logits_name = logits
+    device = labels.device
+    loss_full = criterion(logits_full, labels) if logits_full is not None else torch.zeros(1, device=device)
+    loss_symbol = criterion(logits_symbol, labels) if logits_symbol is not None else torch.zeros(1, device=device)
+    loss_name = criterion(logits_name, labels) if logits_name is not None else torch.zeros(1, device=device)
+    combined = ce_full_weight * loss_full + ce_symbol_weight * loss_symbol + ce_name_weight * loss_name
+    return combined, loss_full.detach(), loss_symbol.detach(), loss_name.detach()
 
 
 def main() -> None:
@@ -158,6 +162,7 @@ def main() -> None:
     triplet_loss = nn.TripletMarginLoss(margin=float(train_cfg.get("margin", 0.35)), p=2)
     ce_weight_full = float(train_cfg.get("ce_full_weight", 0.3))
     ce_weight_symbol = float(train_cfg.get("ce_symbol_weight", 1.0))
+    ce_weight_name = float(train_cfg.get("ce_name_weight", 1.0))
     ce_loss = nn.CrossEntropyLoss()
 
     debug_root = cfg.get("paths", {}).get("debug_dir", "./debug")
@@ -176,34 +181,41 @@ def main() -> None:
         running_ce = 0.0
         running_full = 0.0
         running_symbol = 0.0
+        running_name = 0.0
         running_correct = 0
         running_samples = 0
         for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs}"):
             (
                 anchor_full,
                 anchor_symbol,
+                anchor_name,
                 pos_full,
                 pos_symbol,
+                pos_name,
                 neg_full,
                 neg_symbol,
+                neg_name,
                 labels,
             ) = batch
             anchor_full = anchor_full.to(device, non_blocking=True)
             anchor_symbol = anchor_symbol.to(device, non_blocking=True)
+            anchor_name = anchor_name.to(device, non_blocking=True)
             pos_full = pos_full.to(device, non_blocking=True)
             pos_symbol = pos_symbol.to(device, non_blocking=True)
+            pos_name = pos_name.to(device, non_blocking=True)
             neg_full = neg_full.to(device, non_blocking=True)
             neg_symbol = neg_symbol.to(device, non_blocking=True)
+            neg_name = neg_name.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
             optimizer.zero_grad()
 
-            anchor_emb, anchor_logits = model(anchor_full, anchor_symbol, return_logits=True)
-            pos_emb = model(pos_full, pos_symbol)
-            neg_emb = model(neg_full, neg_symbol)
+            anchor_emb, anchor_logits = model(anchor_full, anchor_symbol, anchor_name, return_logits=True)
+            pos_emb = model(pos_full, pos_symbol, pos_name)
+            neg_emb = model(neg_full, neg_symbol, neg_name)
 
             loss_triplet = triplet_loss(anchor_emb, pos_emb, neg_emb)
-            loss_ce_total, loss_ce_full, loss_ce_symbol = _compute_losses(
-                anchor_logits, labels, ce_weight_full, ce_weight_symbol, ce_loss
+            loss_ce_total, loss_ce_full, loss_ce_symbol, loss_ce_name = _compute_losses(
+                anchor_logits, labels, ce_weight_full, ce_weight_symbol, ce_weight_name, ce_loss
             )
             total_loss = loss_triplet + loss_ce_total
             total_loss.backward()
@@ -213,7 +225,8 @@ def main() -> None:
             running_ce += loss_ce_total.item()
             running_full += loss_ce_full.item()
             running_symbol += loss_ce_symbol.item()
-            logits_full, _ = anchor_logits
+            running_name += loss_ce_name.item()
+            logits_full = anchor_logits[0]
             if logits_full is not None:
                 preds = logits_full.argmax(dim=1)
                 running_correct += (preds == labels).sum().item()
@@ -223,6 +236,7 @@ def main() -> None:
         avg_ce = running_ce / len(train_loader)
         avg_full = running_full / len(train_loader)
         avg_symbol = running_symbol / len(train_loader)
+        avg_name = running_name / len(train_loader)
         total = avg_triplet + avg_ce
         train_acc = running_correct / max(1, running_samples)
 
@@ -230,6 +244,7 @@ def main() -> None:
         writer.add_scalar("loss/ce_total", avg_ce, epoch)
         writer.add_scalar("loss/ce_full", avg_full, epoch)
         writer.add_scalar("loss/ce_symbol", avg_symbol, epoch)
+        writer.add_scalar("loss/ce_name", avg_name, epoch)
         writer.add_scalar("loss/total", total, epoch)
         writer.add_scalar("metrics/train_accuracy", train_acc, epoch)
 
@@ -244,14 +259,15 @@ def main() -> None:
                 for batch in val_loader:
                     anchor_full = batch[0].to(device, non_blocking=True)
                     anchor_symbol = batch[1].to(device, non_blocking=True)
+                    anchor_name = batch[2].to(device, non_blocking=True)
                     labels = batch[-1].to(device, non_blocking=True)
-                    _, logits = model(anchor_full, anchor_symbol, return_logits=True)
-                    ce_total, _, _ = _compute_losses(
-                        logits, labels, ce_weight_full, ce_weight_symbol, ce_loss
+                    _, logits = model(anchor_full, anchor_symbol, anchor_name, return_logits=True)
+                    ce_total, _, _, _ = _compute_losses(
+                        logits, labels, ce_weight_full, ce_weight_symbol, ce_weight_name, ce_loss
                     )
                     v_loss += ce_total.item()
 
-                    logits_full, _ = logits
+                    logits_full = logits[0]
                     if logits_full is not None:
                         preds = logits_full.argmax(dim=1)
                         v_correct += (preds == labels).sum().item()
@@ -270,7 +286,7 @@ def main() -> None:
 
         print(
             f"[Epoch {epoch + 1}] total={total:.4f} triplet={avg_triplet:.4f} "
-            f"CE={avg_ce:.4f} (full={avg_full:.4f}, symbol={avg_symbol:.4f}) "
+            f"CE={avg_ce:.4f} (full={avg_full:.4f}, symbol={avg_symbol:.4f}, name={avg_name:.4f}) "
             f"trainAcc={train_acc:.4f}"
             + (
                 f" | valCE={val_loss:.4f} valAcc={val_acc:.4f}"

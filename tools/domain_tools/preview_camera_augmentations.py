@@ -17,8 +17,10 @@ if str(REPO_ROOT) not in sys.path:
 from src.core.augmentations import CameraLikeAugmentor
 from src.core.image_ops import (
     crop_card_art,
+    crop_name_field,
     crop_set_symbol,
     get_full_art_crop_cfg,
+    get_name_field_crop_cfg,
     get_set_symbol_crop_cfg,
 )
 
@@ -125,6 +127,7 @@ def main() -> None:
     augmentor_cfg = config.get("camera_augmentor", {})
     full_art_cfg = get_full_art_crop_cfg(config)
     set_symbol_cfg = get_set_symbol_crop_cfg(config)
+    name_field_cfg = get_name_field_crop_cfg(config)
     camera_augmentor = CameraLikeAugmentor(**augmentor_cfg)
 
     scryfall_samples = pick_images(scryfall_dir, args.num_images)
@@ -150,9 +153,13 @@ def main() -> None:
         art_row = [crop_card_art(img, full_art_cfg) for img in variants]
         rows.append((art_row, labels))
         symbol_row: List[Image.Image] = []
+        name_row: List[Image.Image] = []
         if show_symbols and set_symbol_cfg:
             symbol_row = [crop_set_symbol(img, set_symbol_cfg) for img in variants]
             rows.append((symbol_row, labels))
+        if name_field_cfg:
+            name_row = [crop_name_field(img, name_field_cfg) for img in variants]
+            rows.append((name_row, labels))
 
         if dump_dir:
             sample_dir = dump_dir / f"{sample_idx:02d}_{path.stem}"
@@ -162,6 +169,9 @@ def main() -> None:
             if symbol_row:
                 for label, sym_img in zip(labels, symbol_row):
                     sym_img.save(sample_dir / f"{label}_symbol.png")
+            if name_row:
+                for label, name_img in zip(labels, name_row):
+                    name_img.save(sample_dir / f"{label}_name.png")
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     output_path = output_dir / f"camera_aug_preview_{timestamp}.png"

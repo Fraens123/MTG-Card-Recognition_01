@@ -25,8 +25,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.core.image_ops import (
     crop_card_art,
+    crop_name_field,
     crop_set_symbol,
     get_full_art_crop_cfg,
+    get_name_field_crop_cfg,
     get_set_symbol_crop_cfg,
 )
 
@@ -171,6 +173,7 @@ def main() -> None:
     roi_cfg = config.get("camera", {}).get("card_roi", None)
     art_cfg = get_full_art_crop_cfg(config)
     symbol_cfg = get_set_symbol_crop_cfg(config)
+    name_cfg = get_name_field_crop_cfg(config)
 
     cam_files = sorted([p for p in camera_dir.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"}])
     if not cam_files:
@@ -188,12 +191,14 @@ def main() -> None:
         card = crop_card_roi(cam_img, roi_cfg)
         cam_art = crop_card_art(card, art_cfg)
         cam_symbol = crop_set_symbol(card, symbol_cfg)
+        cam_name = crop_name_field(card, name_cfg)
 
         tiles_camera = [
             prepare_tile(overlay, "Pi-Cam Original + ROI", 900),
             prepare_tile(card, "Pi-Cam ROI-Karte", 900),
             prepare_tile(cam_art, "Pi-Cam Artwork-Crop", 900),
             prepare_tile(cam_symbol, "Pi-Cam Set-Symbol-Crop", 900),
+            prepare_tile(cam_name, "Pi-Cam Namensfeld-Crop", 900),
         ]
 
         tiles_scryfall: List[Image.Image] = []
@@ -208,10 +213,12 @@ def main() -> None:
                 scry_img = scry_img_raw.convert("RGB")
             scry_art = crop_card_art(scry_img, art_cfg)
             scry_symbol = crop_set_symbol(scry_img, symbol_cfg)
+            scry_name = crop_name_field(scry_img, name_cfg)
             tiles_scryfall = [
                 prepare_tile(scry_img, f"Scryfall Original {fallback_label}".strip(), 900),
                 prepare_tile(scry_art, "Scryfall Artwork-Crop", 900),
                 prepare_tile(scry_symbol, "Scryfall Set-Symbol-Crop", 900),
+                prepare_tile(scry_name, "Scryfall Namensfeld-Crop", 900),
             ]
 
         preview = stack_sections([tiles_camera, tiles_scryfall])

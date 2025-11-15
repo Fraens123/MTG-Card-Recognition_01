@@ -31,7 +31,7 @@ def build_embedding_head(in_dim: int, out_dim: int) -> nn.Module:
 
 class CardEncoder(nn.Module):
     """
-    Encoder mit getrennten Backbones fuer Full- und Symbolpfad.
+    Encoder mit getrennten Backbones fuer Full-, Symbol- und Namenspfad.
     Die resultierenden Embeddings werden konkateniert und L2-normalisiert.
     """
 
@@ -42,32 +42,45 @@ class CardEncoder(nn.Module):
 
         self.backbone_full, full_out_dim = build_backbone(cfg)
         self.backbone_symbol, symbol_out_dim = build_backbone(cfg)
+        self.backbone_name, name_out_dim = build_backbone(cfg)
 
         encoder_cfg = cfg.get("encoder", {})
         self.emb_full_dim = int(encoder_cfg.get("emb_full", 512))
         self.emb_symbol_dim = int(encoder_cfg.get("emb_symbol", 512))
+        self.emb_name_dim = int(encoder_cfg.get("emb_name", 512))
 
         self.head_full = build_embedding_head(full_out_dim, self.emb_full_dim)
         self.head_symbol = build_embedding_head(symbol_out_dim, self.emb_symbol_dim)
+        self.head_name = build_embedding_head(name_out_dim, self.emb_name_dim)
 
         if num_classes:
             self.classifier_full = nn.Linear(self.emb_full_dim, num_classes)
             self.classifier_symbol = nn.Linear(self.emb_symbol_dim, num_classes)
+            self.classifier_name = nn.Linear(self.emb_name_dim, num_classes)
         else:
             self.classifier_full = None
             self.classifier_symbol = None
+            self.classifier_name = None
 
-    def forward(self, x_full: torch.Tensor, x_crop: torch.Tensor, return_logits: bool = False):
+    def forward(
+        self,
+        x_full: torch.Tensor,
+        x_symbol: torch.Tensor,
+        x_name: torch.Tensor,
+        return_logits: bool = False,
+    ):
         emb_full = self._encode_branch(self.backbone_full, self.head_full, x_full)
-        emb_symbol = self._encode_branch(self.backbone_symbol, self.head_symbol, x_crop)
+        emb_symbol = self._encode_branch(self.backbone_symbol, self.head_symbol, x_symbol)
+        emb_name = self._encode_branch(self.backbone_name, self.head_name, x_name)
 
-        combined = torch.cat([emb_full, emb_symbol], dim=1)
+        combined = torch.cat([emb_full, emb_symbol, emb_name], dim=1)
         combined = F.normalize(combined, p=2, dim=-1)
 
         if return_logits:
             logits_full = self.classifier_full(emb_full) if self.classifier_full is not None else None
             logits_symbol = self.classifier_symbol(emb_symbol) if self.classifier_symbol is not None else None
-            return combined, (logits_full, logits_symbol)
+            logits_name = self.classifier_name(emb_name) if self.classifier_name is not None else None
+            return combined, (logits_full, logits_symbol, logits_name)
         return combined
 
     def _encode_branch(self, backbone: nn.Module, head: nn.Module, x: torch.Tensor) -> torch.Tensor:
@@ -76,13 +89,18 @@ class CardEncoder(nn.Module):
         return F.normalize(emb, p=2, dim=-1)
 
     @torch.no_grad()
-    def encode_normalized(self, x_full: torch.Tensor, x_crop: Optional[torch.Tensor] = None) -> torch.Tensor:
-        if x_crop is None:
-            if isinstance(x_full, (tuple, list)) and len(x_full) == 2:
-                x_full, x_crop = x_full
+    def encode_normalized(
+        self,
+        x_full: torch.Tensor,
+        x_symbol: Optional[torch.Tensor] = None,
+        x_name: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if x_symbol is None or x_name is None:
+            if isinstance(x_full, (tuple, list)) and len(x_full) == 3:
+                x_full, x_symbol, x_name = x_full
             else:
-                raise ValueError("CardEncoder.encode_normalized erwartet full- und crop-Tensor.")
-        embedding = self.forward(x_full, x_crop)
+                raise ValueError("CardEncoder.encode_normalized erwartet full-, symbol- und name-Tensor.")
+        embedding = self.forward(x_full, x_symbol, x_name)
         return embedding
 
 

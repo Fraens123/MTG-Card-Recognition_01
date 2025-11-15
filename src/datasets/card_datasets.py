@@ -14,8 +14,10 @@ from torchvision.utils import save_image
 from src.core.augmentations import CameraLikeAugmentor
 from src.core.image_ops import (
     crop_card_art,
+    crop_name_field,
     crop_set_symbol,
     get_full_art_crop_cfg,
+    get_name_field_crop_cfg,
     get_set_symbol_crop_cfg,
 )
 
@@ -176,8 +178,10 @@ class CoarseDataset(Dataset):
 
         self.full_crop_cfg = get_full_art_crop_cfg(cfg)
         self.symbol_crop_cfg = get_set_symbol_crop_cfg(cfg)
+        self.name_crop_cfg = get_name_field_crop_cfg(cfg)
         self.full_transform = _build_card_transform(_size_to_hw(self.images_cfg.get("full_card_size")), augment_cfg)
         self.symbol_transform = _build_card_transform(_size_to_hw(self.images_cfg.get("symbol_size")), augment_cfg)
+        self.name_transform = _build_card_transform(_size_to_hw(self.images_cfg.get("name_size")), augment_cfg)
 
         self.card_to_paths = _index_card_images(self.paths.get("scryfall_dir"))
         if not self.card_to_paths:
@@ -199,11 +203,13 @@ class CoarseDataset(Dataset):
         img = self._load_image(img_path)
         full_img = crop_card_art(img, self.full_crop_cfg)
         symbol_img = crop_set_symbol(img, self.symbol_crop_cfg)
+        name_img = crop_name_field(img, self.name_crop_cfg)
 
         full_tensor = self.full_transform(full_img)
         symbol_tensor = self.symbol_transform(symbol_img)
+        name_tensor = self.name_transform(name_img)
         label = torch.tensor(self.card_to_idx[card_id], dtype=torch.long)
-        return full_tensor, symbol_tensor, label
+        return full_tensor, symbol_tensor, name_tensor, label
 
     def _load_image(self, path: str) -> Image.Image:
         cached = self.image_cache.get(path)
@@ -222,8 +228,10 @@ class CoarseDataset(Dataset):
         for i in range(n_aug):
             full_tensor = self.full_transform(crop_card_art(img, self.full_crop_cfg))
             symbol_tensor = self.symbol_transform(crop_set_symbol(img, self.symbol_crop_cfg))
+            name_tensor = self.name_transform(crop_name_field(img, self.name_crop_cfg))
             save_image(_denormalize(full_tensor), os.path.join(output_dir, f"{card_id}_full_{i:02d}.png"))
             save_image(_denormalize(symbol_tensor), os.path.join(output_dir, f"{card_id}_symbol_{i:02d}.png"))
+            save_image(_denormalize(name_tensor), os.path.join(output_dir, f"{card_id}_name_{i:02d}.png"))
 
 
 class TripletImageDataset(Dataset):
@@ -240,9 +248,11 @@ class TripletImageDataset(Dataset):
 
         self.full_crop_cfg = get_full_art_crop_cfg(cfg)
         self.symbol_crop_cfg = get_set_symbol_crop_cfg(cfg)
+        self.name_crop_cfg = get_name_field_crop_cfg(cfg)
 
         self.full_transform = _build_card_transform(_size_to_hw(self.images_cfg.get("full_card_size")), augment_cfg)
         self.symbol_transform = _build_card_transform(_size_to_hw(self.images_cfg.get("symbol_size")), augment_cfg)
+        self.name_transform = _build_card_transform(_size_to_hw(self.images_cfg.get("name_size")), augment_cfg)
 
         self.card_to_paths = _index_card_images(self.paths.get("scryfall_dir"))
         if not self.card_to_paths:
@@ -295,13 +305,27 @@ class TripletImageDataset(Dataset):
 
         a_full = self.full_transform(crop_card_art(anchor_img, self.full_crop_cfg))
         a_symbol = self.symbol_transform(crop_set_symbol(anchor_img, self.symbol_crop_cfg))
+        a_name = self.name_transform(crop_name_field(anchor_img, self.name_crop_cfg))
         p_full = self.full_transform(crop_card_art(positive_img, self.full_crop_cfg))
         p_symbol = self.symbol_transform(crop_set_symbol(positive_img, self.symbol_crop_cfg))
+        p_name = self.name_transform(crop_name_field(positive_img, self.name_crop_cfg))
         n_full = self.full_transform(crop_card_art(negative_img, self.full_crop_cfg))
         n_symbol = self.symbol_transform(crop_set_symbol(negative_img, self.symbol_crop_cfg))
+        n_name = self.name_transform(crop_name_field(negative_img, self.name_crop_cfg))
         label = torch.tensor(self.card_to_idx[anchor_uuid], dtype=torch.long)
 
-        return a_full, a_symbol, p_full, p_symbol, n_full, n_symbol, label
+        return (
+            a_full,
+            a_symbol,
+            a_name,
+            p_full,
+            p_symbol,
+            p_name,
+            n_full,
+            n_symbol,
+            n_name,
+            label,
+        )
 
     def _prepare_image(self, path: str) -> Image.Image:
         img = self._load_image(path)
@@ -334,8 +358,10 @@ class TripletImageDataset(Dataset):
             img = self._prepare_image(img_path)
             full_tensor = self.full_transform(crop_card_art(img, self.full_crop_cfg))
             symbol_tensor = self.symbol_transform(crop_set_symbol(img, self.symbol_crop_cfg))
+            name_tensor = self.name_transform(crop_name_field(img, self.name_crop_cfg))
             save_image(_denormalize(full_tensor), os.path.join(output_dir, f"{card_id}_triplet_full_{idx:02d}.png"))
             save_image(_denormalize(symbol_tensor), os.path.join(output_dir, f"{card_id}_triplet_symbol_{idx:02d}.png"))
+            save_image(_denormalize(name_tensor), os.path.join(output_dir, f"{card_id}_triplet_name_{idx:02d}.png"))
 
 
 def _map_camera_aug_params(augment_cfg: Dict) -> Dict:

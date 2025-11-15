@@ -30,17 +30,20 @@ def parse_args() -> argparse.Namespace:
 
 
 def _compute_losses(
-    logits: Tuple[torch.Tensor, torch.Tensor],
+    logits: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     labels: torch.Tensor,
     ce_full_weight: float,
     ce_symbol_weight: float,
+    ce_name_weight: float,
     criterion: nn.Module,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    logits_full, logits_symbol = logits
-    loss_full = criterion(logits_full, labels) if logits_full is not None else torch.zeros(1, device=labels.device)
-    loss_symbol = criterion(logits_symbol, labels) if logits_symbol is not None else torch.zeros(1, device=labels.device)
-    total = ce_full_weight * loss_full + ce_symbol_weight * loss_symbol
-    return total, loss_full.detach(), loss_symbol.detach()
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    logits_full, logits_symbol, logits_name = logits
+    device = labels.device
+    loss_full = criterion(logits_full, labels) if logits_full is not None else torch.zeros(1, device=device)
+    loss_symbol = criterion(logits_symbol, labels) if logits_symbol is not None else torch.zeros(1, device=device)
+    loss_name = criterion(logits_name, labels) if logits_name is not None else torch.zeros(1, device=device)
+    total = ce_full_weight * loss_full + ce_symbol_weight * loss_symbol + ce_name_weight * loss_name
+    return total, loss_full.detach(), loss_symbol.detach(), loss_name.detach()
 
 
 def _run_pipeline_step(cmd: list[str], label: str) -> Tuple[float, int]:
@@ -147,6 +150,7 @@ def main() -> None:
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max)
     ce_weight_full = float(train_cfg.get("ce_full_weight", 1.0))
     ce_weight_symbol = float(train_cfg.get("ce_symbol_weight", 1.0))
+    ce_weight_name = float(train_cfg.get("ce_name_weight", 1.0))
     ce_loss = nn.CrossEntropyLoss()
 
     debug_root = cfg.get("paths", {}).get("debug_dir", "./debug")
@@ -165,16 +169,18 @@ def main() -> None:
         running_loss = 0.0
         running_full = 0.0
         running_symbol = 0.0
+        running_name = 0.0
         running_correct = 0
         running_samples = 0
         for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs}"):
             optimizer.zero_grad()
             full_batch = batch[0].to(device, non_blocking=True)
             symbol_batch = batch[1].to(device, non_blocking=True)
-            labels = batch[2].to(device, non_blocking=True)
-            embeddings, logits = model(full_batch, symbol_batch, return_logits=True)
-            total_loss, loss_full, loss_symbol = _compute_losses(
-                logits, labels, ce_weight_full, ce_weight_symbol, ce_loss
+            name_batch = batch[2].to(device, non_blocking=True)
+            labels = batch[3].to(device, non_blocking=True)
+            embeddings, logits = model(full_batch, symbol_batch, name_batch, return_logits=True)
+            total_loss, loss_full, loss_symbol, loss_name = _compute_losses(
+                logits, labels, ce_weight_full, ce_weight_symbol, ce_weight_name, ce_loss
             )
             total_loss.backward()
             optimizer.step()
@@ -182,7 +188,8 @@ def main() -> None:
             running_loss += total_loss.item()
             running_full += loss_full.item()
             running_symbol += loss_symbol.item()
-            logits_full, _ = logits
+            running_name += loss_name.item()
+            logits_full = logits[0]
             if logits_full is not None:
                 preds = logits_full.argmax(dim=1)
                 running_correct += (preds == labels).sum().item()
@@ -191,10 +198,12 @@ def main() -> None:
         avg_loss = running_loss / len(train_loader)
         avg_full = running_full / len(train_loader)
         avg_symbol = running_symbol / len(train_loader)
+        avg_name = running_name / len(train_loader)
         train_acc = running_correct / max(1, running_samples)
         writer.add_scalar("loss/total", avg_loss, epoch)
         writer.add_scalar("loss/full_ce", avg_full, epoch)
         writer.add_scalar("loss/symbol_ce", avg_symbol, epoch)
+        writer.add_scalar("loss/name_ce", avg_name, epoch)
         writer.add_scalar("metrics/train_accuracy", train_acc, epoch)
 
         val_loss = None
@@ -205,18 +214,19 @@ def main() -> None:
             v_correct = 0
             v_samples = 0
             with torch.no_grad():
-                for full_batch, symbol_batch, labels in val_loader:
+                for full_batch, symbol_batch, name_batch, labels in val_loader:
                     full_batch = full_batch.to(device, non_blocking=True)
                     symbol_batch = symbol_batch.to(device, non_blocking=True)
+                    name_batch = name_batch.to(device, non_blocking=True)
                     labels = labels.to(device, non_blocking=True)
 
-                    _, logits = model(full_batch, symbol_batch, return_logits=True)
-                    ce_total, _, _ = _compute_losses(
-                        logits, labels, ce_weight_full, ce_weight_symbol, ce_loss
+                    _, logits = model(full_batch, symbol_batch, name_batch, return_logits=True)
+                    ce_total, _, _, _ = _compute_losses(
+                        logits, labels, ce_weight_full, ce_weight_symbol, ce_weight_name, ce_loss
                     )
                     v_loss += ce_total.item()
 
-                    logits_full, _ = logits
+                    logits_full = logits[0]
                     if logits_full is not None:
                         preds = logits_full.argmax(dim=1)
                         v_correct += (preds == labels).sum().item()
@@ -235,7 +245,7 @@ def main() -> None:
 
         print(
             f"[Epoch {epoch + 1}] total={avg_loss:.4f} fullCE={avg_full:.4f} symbolCE={avg_symbol:.4f} "
-            f"trainAcc={train_acc:.4f}"
+            f"nameCE={avg_name:.4f} trainAcc={train_acc:.4f}"
             + (
                 f" | valCE={val_loss:.4f} valAcc={val_acc:.4f}"
                 if val_loss is not None and val_acc is not None

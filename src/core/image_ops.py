@@ -66,6 +66,14 @@ def get_full_art_crop_cfg(config: Dict) -> Optional[Dict]:
     return config.get("debug", {}).get("full_art_crop")
 
 
+def get_name_field_crop_cfg(config: Dict) -> Optional[Dict]:
+    images_cfg = config.get("images", {})
+    crop_cfg = images_cfg.get("name_crop")
+    if crop_cfg:
+        return crop_cfg
+    return config.get("debug", {}).get("name_field_crop")
+
+
 def resolve_resize_hw(config: Dict, sample_dir: Optional[str] = None) -> Tuple[int, int]:
     """
     Liefert die Zielgr��e (H, W) f�r Vollkarten. Priorisiert config.yaml,
@@ -124,4 +132,8 @@ def crop_set_symbol(img: Image.Image, crop_cfg: Optional[Dict]) -> Image.Image:
 
 
 def crop_card_art(img: Image.Image, crop_cfg: Optional[Dict]) -> Image.Image:
+    return _crop_region(img, crop_cfg)
+
+
+def crop_name_field(img: Image.Image, crop_cfg: Optional[Dict]) -> Image.Image:
     return _crop_region(img, crop_cfg)

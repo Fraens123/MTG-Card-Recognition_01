@@ -19,7 +19,14 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.core.augmentations import CameraLikeAugmentor
 from src.core.config_utils import load_config
 from src.core.embedding_utils import build_card_embedding
-from src.core.image_ops import crop_card_art, crop_set_symbol, get_full_art_crop_cfg, get_set_symbol_crop_cfg
+from src.core.image_ops import (
+    crop_card_art,
+    crop_name_field,
+    crop_set_symbol,
+    get_full_art_crop_cfg,
+    get_name_field_crop_cfg,
+    get_set_symbol_crop_cfg,
+)
 from src.core.model_builder import load_encoder
 from src.datasets.card_datasets import parse_scryfall_filename
 
@@ -47,13 +54,16 @@ def _prepare_tensors(
     img: Image.Image,
     full_transform: T.Compose,
     symbol_transform: T.Compose,
+    name_transform: T.Compose,
     full_crop_cfg: Dict,
     symbol_crop_cfg: Dict,
+    name_crop_cfg: Dict,
     device: torch.device,
 ):
     full_tensor = full_transform(crop_card_art(img, full_crop_cfg)).unsqueeze(0).to(device)
     symbol_tensor = symbol_transform(crop_set_symbol(img, symbol_crop_cfg)).unsqueeze(0).to(device)
-    return full_tensor, symbol_tensor
+    name_tensor = name_transform(crop_name_field(img, name_crop_cfg)).unsqueeze(0).to(device)
+    return full_tensor, symbol_tensor, name_tensor
 
 
 def add_embedding(emb_list: List[List[float]], emb) -> None:
@@ -132,8 +142,10 @@ def main() -> None:
     images_cfg = cfg.get("images", {})
     full_transform = _build_eval_transform(tuple(reversed(images_cfg.get("full_card_size", [224, 320]))))
     symbol_transform = _build_eval_transform(tuple(reversed(images_cfg.get("symbol_size", [160, 64]))))
+    name_transform = _build_eval_transform(tuple(reversed(images_cfg.get("name_size", [64, 320]))))
     full_crop_cfg = get_full_art_crop_cfg(cfg)
     symbol_crop_cfg = get_set_symbol_crop_cfg(cfg)
+    name_crop_cfg = get_name_field_crop_cfg(cfg)
 
     embedding_store: Dict[str, List] = OrderedDict()
     card_meta_store: Dict[str, Dict[str, str]] = OrderedDict()
@@ -154,10 +166,17 @@ def main() -> None:
 
     for name, path in tqdm(files, desc="Exportiere Embeddings"):
         img = Image.open(path).convert("RGB")
-        full_tensor, symbol_tensor = _prepare_tensors(
-            img, full_transform, symbol_transform, full_crop_cfg, symbol_crop_cfg, device
+        full_tensor, symbol_tensor, name_tensor = _prepare_tensors(
+            img,
+            full_transform,
+            symbol_transform,
+            name_transform,
+            full_crop_cfg,
+            symbol_crop_cfg,
+            name_crop_cfg,
+            device,
         )
-        base_embedding = build_card_embedding(model, full_tensor, symbol_tensor)
+        base_embedding = build_card_embedding(model, full_tensor, symbol_tensor, name_tensor)
 
         meta = parse_scryfall_filename(name)
         if meta:
@@ -185,10 +204,17 @@ def main() -> None:
 
         if (not use_original_mode) and (camera_aug is not None):
             for aug_img in _generate_augmented_images(camera_aug, img, num_aug):
-                full_tensor, symbol_tensor = _prepare_tensors(
-                    aug_img, full_transform, symbol_transform, full_crop_cfg, symbol_crop_cfg, device
+                full_tensor, symbol_tensor, name_tensor = _prepare_tensors(
+                    aug_img,
+                    full_transform,
+                    symbol_transform,
+                    name_transform,
+                    full_crop_cfg,
+                    symbol_crop_cfg,
+                    name_crop_cfg,
+                    device,
                 )
-                aug_embedding = build_card_embedding(model, full_tensor, symbol_tensor)
+                aug_embedding = build_card_embedding(model, full_tensor, symbol_tensor, name_tensor)
                 add_embedding(emb_list, aug_embedding)
 
         centroid = None

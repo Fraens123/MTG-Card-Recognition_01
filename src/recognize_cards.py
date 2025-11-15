@@ -33,10 +33,12 @@ from src.core.model_builder import load_encoder
 from src.core.card_database import SimpleCardDB
 from src.core.image_ops import (
     build_resize_normalize_transform,
-    crop_set_symbol,
     crop_card_art,
-    get_set_symbol_crop_cfg,
+    crop_name_field,
+    crop_set_symbol,
     get_full_art_crop_cfg,
+    get_name_field_crop_cfg,
+    get_set_symbol_crop_cfg,
     resolve_resize_hw,
 )
 from src.core.embedding_utils import build_card_embedding
@@ -97,16 +99,25 @@ class CropDebugger:
         if self.limit > 0 and self.directory:
             self.directory.mkdir(parents=True, exist_ok=True)
 
-    def record(self, card_img: Optional[Image.Image], art_img: Image.Image, symbol_img: Image.Image, source: str):
+    def record(
+        self,
+        card_img: Optional[Image.Image],
+        art_img: Image.Image,
+        symbol_img: Image.Image,
+        name_img: Image.Image,
+        source: str,
+    ):
         if self.limit <= 0 or self.directory is None or self.count >= self.limit:
             return
         stem = Path(source).stem
         art_path = self.directory / f"{stem}_art_{self.count:02d}.png"
         symbol_path = self.directory / f"{stem}_symbol_{self.count:02d}.png"
+        name_path = self.directory / f"{stem}_name_{self.count:02d}.png"
         card_path = self.directory / f"{stem}_card_{self.count:02d}.png" if card_img else None
         try:
             art_img.save(art_path)
             symbol_img.save(symbol_path)
+            name_img.save(name_path)
             if card_img and card_path:
                 card_img.save(card_path)
             self.count += 1
@@ -266,12 +277,14 @@ def search_camera_image(
     model: torch.nn.Module,
     transform: T.Compose,
     crop_transform: T.Compose,
+    name_transform: T.Compose,
     db: SimpleCardDB,
     camera_img_path: str,
     device: torch.device,
     config: dict,
     art_crop_cfg: Optional[dict],
     crop_cfg: Optional[dict],
+    name_crop_cfg: Optional[dict],
     debug_recorder=None,
 ) -> Tuple[Optional[Dict], float, float]:
     """Berechnet das Query-Embedding und sucht den besten Match in der Datenbank."""
@@ -287,13 +300,17 @@ def search_camera_image(
         # DANN wie bisher: Artwork- und Set-Symbol-Crop auf der normierten Karte
         art_img = crop_card_art(card_img, art_crop_cfg)
         crop_img = crop_set_symbol(card_img, crop_cfg)
+        name_img = crop_name_field(card_img, name_crop_cfg)
         if debug_recorder:
-            debug_recorder(card_img, art_img, crop_img, camera_img_path)
+            debug_recorder(card_img, art_img, crop_img, name_img, camera_img_path)
         full_tensor = transform(art_img).unsqueeze(0).to(device)
         crop_tensor = crop_transform(crop_img).unsqueeze(0).to(device)
+        name_tensor = name_transform(name_img).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        query_embedding = build_card_embedding(model, full_tensor, crop_tensor).cpu().numpy().flatten()
+        query_embedding = (
+            build_card_embedding(model, full_tensor, crop_tensor, name_tensor).cpu().numpy().flatten()
+        )
 
     search_cfg = config.get("recognition", {})
     top_k = search_cfg.get("top_k", 5)
@@ -351,6 +368,10 @@ def test_all_camera_images(
     crop_height = crop_cfg.get("target_height", 64) if crop_cfg else 64
     crop_width = crop_cfg.get("target_width", 160) if crop_cfg else 160
     crop_transform = build_resize_normalize_transform((crop_height, crop_width))
+    name_cfg = get_name_field_crop_cfg(config)
+    name_height = name_cfg.get("target_height", 64) if name_cfg else 64
+    name_width = name_cfg.get("target_width", 320) if name_cfg else 320
+    name_transform = build_resize_normalize_transform((name_height, name_width))
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -386,12 +407,14 @@ def test_all_camera_images(
                 model,
                 transform,
                 crop_transform,
+                name_transform,
                 db,
                 str(camera_file),
                 device,
                 config,
                 art_cfg,
                 crop_cfg,
+                name_cfg,
                 crop_dump.record if crop_dump.directory else None,
             )
             total_time += search_time
