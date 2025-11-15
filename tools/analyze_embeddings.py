@@ -7,7 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Sequence
 
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt 
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 
