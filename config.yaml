@@ -8,6 +8,7 @@ paths:
 
 images:
   full_card_size: [224, 320]  # [width, height]
+  #full_card_size: [320, 448]  # [width, height]
   full_crop:
     x_min: 0.0
     y_min: 0.0
@@ -16,16 +17,19 @@ images:
     keep_aspect: true
 
 encoder:
-  type: resnet18
-  emb_dim: 1024
+  type: resnet18    # resnet18
+  emb_dim: 1024     # Dimension bleibt unverändert
 
 training:
   coarse:
-    batch_size: 128
-    epochs: 20
+    batch_size: 192  # resnet18
+    #batch_size: 160 # resnet50
+    epochs: 20 # resnet18
+    #epochs: 12  # resnet50
     lr: 0.001
-    num_workers: 4
-    cache_max_size: 4096
+    num_workers: 8
+    cache_images: true
+    cache_size: 4096
     augment:
       rotation_deg: 1
       brightness: [0.9, 1.1]
@@ -33,13 +37,14 @@ training:
       blur_prob: 0.1
       noise_std: 0.02
   fine:
-    batch_size: 48
+    batch_size: 64
     epochs: 10
     lr: 0.0001
     margin: 0.35
     freeze_ratio: 0.6
-    num_workers: 4
-    cache_max_size: 4096
+    num_workers: 8
+    cache_images: true
+    cache_size: 4096
     use_camera_images: false
     augment:
       camera_like: true
@@ -104,6 +109,8 @@ embedding_export_runtime:
   append_individual: false
   append_centroid: false
   output_path: ./embeddings/card_embeddings.json
+  export_batch_size: 64
+  num_workers: 4
 
 embedding_export_analysis:
   model_path: ./models/encoder_fine.pt
@@ -113,3 +120,5 @@ embedding_export_analysis:
   append_individual: true
   append_centroid: true
   output_path: ./embeddings/card_embeddings_analysis.json
+  export_batch_size: 64
+  num_workers: 4

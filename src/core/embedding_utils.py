@@ -25,3 +25,13 @@ def build_card_embedding(model: torch.nn.Module, full_tensor: torch.Tensor) -> t
     with torch.no_grad():
         embedding = model.encode_normalized(full_tensor)
     return embedding.squeeze(0)
+
+
+def build_card_embedding_batch(model: torch.nn.Module, full_batch: torch.Tensor) -> torch.Tensor:
+    """
+    Batch-Version von build_card_embedding. Erwartet [B, C, H, W] und liefert [B, D].
+    """
+    assert full_batch.ndim == 4, "full_batch muss 4D sein (B, C, H, W)."
+    with torch.no_grad():
+        embeddings = model.encode_normalized(full_batch)
+    return embeddings

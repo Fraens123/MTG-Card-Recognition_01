@@ -1,8 +1,20 @@
+
+Export Embeddings:
+
 Runtime-Export (1 Zentroid pro Karte):
 python -m src.training.export_embeddings --config config.yaml --mode runtime
 
 Analyse-Export (alle Augs + Zentroid):
 python -m src.training.export_embeddings --config config.yaml --mode analysis
 
-Danach kannst du den Analyse-Plot fahren:
+
+----------------------------------------------------------------------------------------
+Analyse Tools:
+
+Analyse-Plot fahren:
 python -m tools.analyze_embeddings --config config.yaml --mode analysis
+
+TSNE_Analyse:
+python -m tools.tsne_embeddings --config config.yaml --max-cards 500 --perplexity 30 --save debug/tsne_3d.png
+
+----------------------------------------------------------------------------------------

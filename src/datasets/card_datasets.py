@@ -164,7 +164,11 @@ class CoarseDataset(Dataset):
         self.card_ids = sorted(self.card_to_paths.keys())
         self.card_to_idx = {card_id: idx for idx, card_id in enumerate(self.card_ids)}
         self.samples = [(card_id, path) for card_id, paths in self.card_to_paths.items() for path in paths]
-        self.image_cache = LRUCache(max_size=coarse_cfg.get("cache_max_size", 0))
+        cache_size = 0
+        if coarse_cfg.get("cache_images", False):
+            cache_size = int(coarse_cfg.get("cache_size", 0))
+        # Hält dekodierte PIL-Images im RAM, um wiederholte Disk-Reads zu vermeiden.
+        self.image_cache = LRUCache(max_size=cache_size)
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -182,6 +186,7 @@ class CoarseDataset(Dataset):
         cached = self.image_cache.get(path)
         if cached is not None:
             return cached.copy()
+        # Disk-Read nur bei Cache-Miss (I/O-Flaschenhals vermeiden).
         img = Image.open(path).convert("RGB")
         self.image_cache[path] = img.copy()
         return img
@@ -228,7 +233,11 @@ class TripletImageDataset(Dataset):
         self.card_to_idx = {card_id: idx for idx, card_id in enumerate(self.card_ids)}
         self.total_images = sum(len(p) for p in self.card_to_paths.values())
         self.max_triplets = int(fine_cfg.get("max_samples_per_epoch", self.total_images)) or self.total_images
-        self.image_cache = LRUCache(max_size=fine_cfg.get("cache_max_size", 0))
+        cache_size = 0
+        if fine_cfg.get("cache_images", False):
+            cache_size = int(fine_cfg.get("cache_size", 0))
+        # Triplet-Loader profitiert stark von gecachten PIL-Images (weniger I/O-Latenz).
+        self.image_cache = LRUCache(max_size=cache_size)
 
         self.camera_augmentor: Optional[CameraLikeAugmentor] = None
         self.camera_aug_repeats = max(1, int(round(augment_cfg.get("camera_like_strength", 1))))
@@ -271,6 +280,7 @@ class TripletImageDataset(Dataset):
         cached = self.image_cache.get(path)
         if cached is not None:
             return cached.copy()
+        # Disk-Read nur bei Cache-Miss (I/O-Flaschenhals vermeiden).
         img = Image.open(path).convert("RGB")
         self.image_cache[path] = img.copy()
         return img

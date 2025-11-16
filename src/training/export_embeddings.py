@@ -4,8 +4,9 @@ import argparse
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
@@ -19,7 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.core.augmentations import CameraLikeAugmentor
 from src.core.config_utils import load_config
-from src.core.embedding_utils import build_card_embedding, compute_centroid, l2_normalize
+from src.core.embedding_utils import build_card_embedding_batch, compute_centroid, l2_normalize
 from src.core.image_ops import crop_card_art, get_full_art_crop_cfg
 from src.core.model_builder import load_encoder
 from src.datasets.card_datasets import parse_scryfall_filename
@@ -77,18 +78,6 @@ def _select_export_cfg(cfg: Dict, mode: str) -> tuple[Dict, str]:
     return cfg[key] or {}, key
 
 
-def _embed_card(
-    model: torch.nn.Module,
-    img: Image.Image,
-    transform: T.Compose,
-    crop_cfg: Dict,
-    device: torch.device,
-) -> np.ndarray:
-    full_tensor = _prepare_tensors(img, transform, crop_cfg, device)
-    embedding = build_card_embedding(model, full_tensor).cpu().numpy()
-    return l2_normalize(embedding)
-
-
 def _generate_augmented_images(
     base_img: Image.Image, num_augmentations: int, augmentor: CameraLikeAugmentor | None
 ) -> List[Image.Image]:
@@ -98,6 +87,79 @@ def _generate_augmented_images(
         return [base_img.copy() for _ in range(num_augmentations)]
     aug_list = augmentor.create_camera_like_augmentations(base_img, num_augmentations=num_augmentations)
     return aug_list[1 : num_augmentations + 1]
+
+
+def _prepare_card_tensors(
+    name: str,
+    path: str,
+    transform: T.Compose,
+    crop_cfg: Dict,
+    use_augs: bool,
+    num_aug: int,
+    camera_aug_cfg: Dict,
+) -> Tuple[Dict[str, str], List[torch.Tensor]]:
+    img = Image.open(path).convert("RGB")
+    card_embeddings_tensors: List[torch.Tensor] = []
+
+    base_tensor = _prepare_tensors(img, transform, crop_cfg, device=torch.device("cpu")).squeeze(0)
+    card_embeddings_tensors.append(base_tensor)
+
+    if use_augs and num_aug > 0:
+        augmentor = CameraLikeAugmentor(**camera_aug_cfg) if camera_aug_cfg.get("enabled", True) else None
+        for aug_img in _generate_augmented_images(img, num_aug, augmentor):
+            aug_tensor = _prepare_tensors(aug_img, transform, crop_cfg, device=torch.device("cpu")).squeeze(0)
+            card_embeddings_tensors.append(aug_tensor)
+
+    meta = parse_scryfall_filename(name)
+    if meta:
+        card_uuid, set_code, collector_number, card_name = meta
+        card_name = card_name.replace("_", " ")
+    else:
+        card_uuid = os.path.splitext(name)[0]
+        set_code = ""
+        collector_number = ""
+        card_name = card_uuid
+    card_dict = {
+        "card_uuid": card_uuid,
+        "name": card_name,
+        "set_code": set_code,
+        "collector_number": collector_number,
+        "image_path": str(path),
+    }
+    return card_dict, card_embeddings_tensors
+
+
+def _process_batch(
+    pending: List[Tuple[torch.Tensor, str]],
+    model: torch.nn.Module,
+    device: torch.device,
+) -> List[Tuple[np.ndarray, str]]:
+    if not pending:
+        return []
+    batch_tensors, batch_ids = zip(*pending)
+    full_batch = torch.stack(batch_tensors)
+    if device.type == "cuda":
+        full_batch = full_batch.pin_memory()
+    full_batch = full_batch.to(device, non_blocking=True)
+    emb_batch = build_card_embedding_batch(model, full_batch).cpu().numpy()
+    return [(l2_normalize(vec), card_id) for vec, card_id in zip(emb_batch, batch_ids)]
+
+
+def _expected_vectors_per_card(cfg: Dict, base_count: int) -> int:
+    """
+    Liefert erwartete Vektoren pro Karte basierend auf den Flags.
+    base_count: Original + Augmentierungen (ohne Zentroiden-Logik).
+    """
+    expected = 0
+    if cfg.get("append_individual", False):
+        expected += base_count
+    if cfg.get("append_centroid", False):
+        expected += 1
+    if cfg.get("use_centroid", False):
+        expected = 1
+    if expected == 0:
+        expected = base_count
+    return expected
 
 
 def main() -> None:
@@ -110,6 +172,7 @@ def main() -> None:
     print(f"[INFO] Exportiere Embeddings auf {device}")
     print(f"[LOAD] Modell: {model_path}")
     model = load_encoder(model_path, cfg, device=device)
+    model.eval()
 
     scryfall_dir = cfg["paths"]["scryfall_dir"]
     if not os.path.isdir(scryfall_dir):
@@ -122,6 +185,8 @@ def main() -> None:
 
     use_augmentations = bool(export_cfg.get("use_augmentations", False))
     num_augmentations = int(export_cfg.get("num_augmentations", 0))
+    export_batch_size = int(export_cfg.get("export_batch_size", 64))
+    num_workers = int(export_cfg.get("num_workers", 4))
     camera_aug_cfg = cfg.get("camera_augmentor", {})
     camera_augmentor: CameraLikeAugmentor | None = None
     if use_augmentations and num_augmentations > 0 and camera_aug_cfg.get("enabled", True):
@@ -131,48 +196,71 @@ def main() -> None:
     embeddings: List[List[float]] = []
     files = list(_iterate_images(scryfall_dir))
     print(f"[INFO] Gefundene Kartenbilder: {len(files)}")
-    for name, path in tqdm(files, desc="Exportiere Embeddings"):
-        img = Image.open(path).convert("RGB")
+    card_to_vectors: Dict[str, List[np.ndarray]] = {}
+    card_meta: Dict[str, Dict[str, str]] = {}
+    pending: List[Tuple[torch.Tensor, str]] = []
 
-        card_embeddings: List[np.ndarray] = []
-        base_embedding = _embed_card(model, img, full_transform, full_crop_cfg, device)
-        card_embeddings.append(base_embedding)
+    def _flush_pending():
+        nonlocal pending
+        if not pending:
+            return
+        batch_results = _process_batch(pending, model, device)
+        for vec, cid in batch_results:
+            card_to_vectors.setdefault(cid, []).append(vec)
+        pending = []
 
-        if use_augmentations and num_augmentations > 0:
-            aug_images = _generate_augmented_images(img, num_augmentations, camera_augmentor)
-            for aug_img in aug_images:
-                aug_embedding = _embed_card(model, aug_img, full_transform, full_crop_cfg, device)
-                card_embeddings.append(aug_embedding)
+    print(f"[INFO] Nutze export_batch_size={export_batch_size} | num_workers={num_workers}")
+    # Paralleles Laden/Augmentieren
+    with ThreadPoolExecutor(max_workers=max(1, num_workers)) as executor:
+        futures = []
+        for name, path in files:
+            futures.append(
+                executor.submit(
+                    _prepare_card_tensors,
+                    name,
+                    path,
+                    full_transform,
+                    full_crop_cfg,
+                    use_augmentations,
+                    num_augmentations,
+                    camera_aug_cfg,
+                )
+            )
 
-        centroid = compute_centroid(card_embeddings)
+        for future in tqdm(futures, desc="Vorbereiten", unit="card"):
+            card_dict, tensors = future.result()
+            cid = card_dict["card_uuid"]
+            card_meta[cid] = card_dict
+            for t in tensors:
+                pending.append((t, cid))
+                if len(pending) >= export_batch_size:
+                    _flush_pending()
+
+        _flush_pending()
+
+    # Zentroiden + Speicherlogik anwenden
+    card_order = [card_meta[cid]["card_uuid"] for cid in card_meta.keys()]
+    total_cards = len(card_order)
+    base_count = 1 + (num_augmentations if use_augmentations and num_augmentations > 0 else 0)
+    expected_per_card = _expected_vectors_per_card(export_cfg, base_count)
+
+    for cid in card_order:
+        vectors = card_to_vectors.get(cid, [])
+        if not vectors:
+            continue
+        centroid = compute_centroid(vectors)
 
         final_vectors: List[np.ndarray] = []
         if export_cfg.get("append_individual", False):
-            final_vectors.extend(card_embeddings)
+            final_vectors.extend(vectors)
         if export_cfg.get("append_centroid", False):
             final_vectors.append(centroid)
         if export_cfg.get("use_centroid", False):
             final_vectors = [centroid]
         if not final_vectors:
-            final_vectors = card_embeddings
+            final_vectors = vectors
 
-        meta = parse_scryfall_filename(name)
-        if meta:
-            card_uuid, set_code, collector_number, card_name = meta
-            card_name = card_name.replace("_", " ")
-        else:
-            card_uuid = os.path.splitext(name)[0]
-            set_code = ""
-            collector_number = ""
-            card_name = card_uuid
-        card_dict = {
-            "card_uuid": card_uuid,
-            "name": card_name,
-            "set_code": set_code,
-            "collector_number": collector_number,
-            "image_path": str(path),
-        }
-
+        card_dict = card_meta[cid]
         for vec in final_vectors:
             cards.append(card_dict)
             embeddings.append(vec.tolist())
@@ -204,6 +292,8 @@ def main() -> None:
             "num_embeddings": num_embeddings,
             "use_augmentations": use_augmentations,
             "num_augmentations": num_augmentations,
+            "export_batch_size": export_batch_size,
+            "num_workers": num_workers,
             "storage": storage_desc,
         },
     }
@@ -211,6 +301,7 @@ def main() -> None:
         json.dump(payload, handle, indent=2, ensure_ascii=False)
     print(f"[INFO] Embeddings exportiert nach {out_path}")
     print(f"[SUMMARY] Modus: {args.mode} | Karten/Cluster: {num_cards} | Embeddings geschrieben: {num_embeddings}")
+    print(f"[SUMMARY] Erwartet pro Karte: {expected_per_card} | Gesamt erwartet: {expected_per_card * total_cards}")
     print(f"[SUMMARY] Augmentierungen: {'aktiv' if use_augmentations and num_augmentations > 0 else 'aus'} (n={num_augmentations})")
     print(f"[SUMMARY] Speicherlogik: {storage_desc}")
     print("[NEXT] Erkennung testen: python -m src.recognize_cards --config config.yaml")

@@ -34,6 +34,8 @@ def _build_dataloader(dataset: CoarseDataset, train_cfg: dict) -> DataLoader:
         num_workers=num_workers,
         pin_memory=True,
         drop_last=False,
+        persistent_workers=True,
+        prefetch_factor=4,
     )
 
 
@@ -45,6 +47,7 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
     train_cfg = get_training_config(cfg, "coarse")
+    torch.backends.cudnn.benchmark = True  # erlaubt schnellere Conv-Kernel-Auswahl bei konstanten Input-Shapes
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Coarse-Training auf {device}")
