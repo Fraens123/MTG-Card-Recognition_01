@@ -15,12 +15,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.core.augmentations import CameraLikeAugmentor
-from src.core.image_ops import (
-    crop_card_art,
-    crop_set_symbol,
-    get_full_art_crop_cfg,
-    get_set_symbol_crop_cfg,
-)
+from src.core.image_ops import crop_card_art, get_full_art_crop_cfg
 
 
 def load_config(path: str) -> dict:
@@ -107,24 +102,23 @@ def main() -> None:
     parser.add_argument("--per-image", type=int, default=6, help="Augmentierungen pro Bild")
     parser.add_argument("--camera-refs", type=int, default=2, help="Anzahl Pi-Cam-Referenzen pro Reihe")
     parser.add_argument("--output", default="debug/domain_preview", help="Zielordner fuer Previews")
-    parser.add_argument("--no-symbols", action="store_true", help="Nur Artwork-Crops anzeigen, ohne Set-Symbole.")
     parser.add_argument(
         "--dump-dir",
         type=str,
         default=None,
-        help="Optionaler Ordner, in dem alle verwendeten Crops (Art + Symbol) gespeichert werden.",
+        help="Optionaler Ordner, in dem alle verwendeten Crops gespeichert werden.",
     )
     args = parser.parse_args()
 
     config = load_config(args.config)
-    scryfall_dir = Path(config["data"]["scryfall_images"])
-    camera_dir = Path(config["data"]["camera_images"])
+    paths_cfg = config.get("paths", {})
+    scryfall_dir = Path(paths_cfg.get("scryfall_dir", "./data/scryfall_images"))
+    camera_dir = Path(paths_cfg.get("camera_dir", "./data/camera_images"))
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     augmentor_cfg = config.get("camera_augmentor", {})
     full_art_cfg = get_full_art_crop_cfg(config)
-    set_symbol_cfg = get_set_symbol_crop_cfg(config)
     camera_augmentor = CameraLikeAugmentor(**augmentor_cfg)
 
     scryfall_samples = pick_images(scryfall_dir, args.num_images)
@@ -137,7 +131,6 @@ def main() -> None:
         dump_dir.mkdir(parents=True, exist_ok=True)
 
     rows: List[Tuple[List[Image.Image], List[str]]] = []
-    show_symbols = not args.no_symbols
     for sample_idx, path in enumerate(scryfall_samples, start=1):
         base = Image.open(path).convert("RGB")
         aug_list = camera_augmentor.create_camera_like_augmentations(base, num_augmentations=args.per_image)
@@ -149,19 +142,12 @@ def main() -> None:
             labels += [f"cam_{idx:02d}" for idx in range(1, len(ref_images) + 1)]
         art_row = [crop_card_art(img, full_art_cfg) for img in variants]
         rows.append((art_row, labels))
-        symbol_row: List[Image.Image] = []
-        if show_symbols and set_symbol_cfg:
-            symbol_row = [crop_set_symbol(img, set_symbol_cfg) for img in variants]
-            rows.append((symbol_row, labels))
 
         if dump_dir:
             sample_dir = dump_dir / f"{sample_idx:02d}_{path.stem}"
             sample_dir.mkdir(parents=True, exist_ok=True)
             for label, art_img in zip(labels, art_row):
                 art_img.save(sample_dir / f"{label}_art.png")
-            if symbol_row:
-                for label, sym_img in zip(labels, symbol_row):
-                    sym_img.save(sample_dir / f"{label}_symbol.png")
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     output_path = output_dir / f"camera_aug_preview_{timestamp}.png"

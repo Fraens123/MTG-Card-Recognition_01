@@ -50,14 +50,6 @@ def _ensure_hw_tuple(size_cfg: Optional[Tuple[int, int]]) -> Tuple[int, int]:
     return int(height), int(width)
 
 
-def get_set_symbol_crop_cfg(config: Dict) -> Optional[Dict]:
-    images_cfg = config.get("images", {})
-    crop_cfg = images_cfg.get("symbol_crop")
-    if crop_cfg:
-        return crop_cfg
-    return config.get("debug", {}).get("set_symbol_crop")
-
-
 def get_full_art_crop_cfg(config: Dict) -> Optional[Dict]:
     images_cfg = config.get("images", {})
     crop_cfg = images_cfg.get("full_crop")
@@ -117,10 +109,6 @@ def _crop_region(img: Image.Image, crop_cfg: Optional[Dict]) -> Image.Image:
     offset_y = (target_h - new_h) // 2
     canvas.paste(resized, (offset_x, offset_y))
     return canvas
-
-
-def crop_set_symbol(img: Image.Image, crop_cfg: Optional[Dict]) -> Image.Image:
-    return _crop_region(img, crop_cfg)
 
 
 def crop_card_art(img: Image.Image, crop_cfg: Optional[Dict]) -> Image.Image:

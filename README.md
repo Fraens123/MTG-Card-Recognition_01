@@ -63,8 +63,8 @@ Das Skript lädt `models/encoder_fine.pt` und `database.path` aus der Config, sc
 ## Konfiguration
 `config.yaml` gliedert sich in die wichtigsten Abschnitte 
 - `paths`: Scryfall-/Kamera-Verzeichnisse, Modelle, Embedding-Output
-- `images`: Zielgrößen + Cropping für Full-/Symbolbilder
+- `images`: Zielgrößen + Cropping für Full-Card-Bilder
 - `encoder`: Backbone-Typ (`resnet18`/`resnet50`) und Embedding-Dimensionen
-- `training.coarse` / `training.fine`: Batchgrößen, Learning-Rate, Epochen, Loss-Gewichte, Augmentierung
+- `training.coarse` / `training.fine`: Batchgrößen, Learning-Rate, Epochen, Augmentierung
 
 Alle Skripte lesen ausschließlich aus dieser Datei – Änderungen werden automatisch übernommen, ohne den Code anzufassen. Stelle nach jedem Trainingslauf sicher, dass das `models/`-Verzeichnis beschreibbar ist und genügend Speicherplatz für die Checkpoints vorhanden ist.

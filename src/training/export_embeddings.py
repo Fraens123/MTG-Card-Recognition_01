@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.core.config_utils import load_config
 from src.core.embedding_utils import build_card_embedding
-from src.core.image_ops import crop_card_art, crop_set_symbol, get_full_art_crop_cfg, get_set_symbol_crop_cfg
+from src.core.image_ops import crop_card_art, get_full_art_crop_cfg
 from src.core.model_builder import load_encoder
 from src.datasets.card_datasets import parse_scryfall_filename
 
@@ -38,6 +38,17 @@ def _build_eval_transform(size_hw) -> T.Compose:
             T.Normalize(DEFAULT_MEAN, DEFAULT_STD),
         ]
     )
+
+
+def _prepare_tensors(
+    img: Image.Image,
+    full_transform: T.Compose,
+    full_crop_cfg: Dict,
+    device: torch.device,
+) -> torch.Tensor:
+    full_img = crop_card_art(img, full_crop_cfg)
+    full_tensor = full_transform(full_img).unsqueeze(0).to(device)
+    return full_tensor
 
 
 def _iterate_images(folder: str):
@@ -66,9 +77,7 @@ def main() -> None:
 
     images_cfg = cfg.get("images", {})
     full_transform = _build_eval_transform(tuple(reversed(images_cfg.get("full_card_size", [224, 320]))))
-    symbol_transform = _build_eval_transform(tuple(reversed(images_cfg.get("symbol_size", [160, 64]))))
     full_crop_cfg = get_full_art_crop_cfg(cfg)
-    symbol_crop_cfg = get_set_symbol_crop_cfg(cfg)
 
     cards: List[Dict[str, str]] = []
     embeddings: List[List[float]] = []
@@ -76,9 +85,8 @@ def main() -> None:
     print(f"[INFO] Gefundene Kartenbilder: {len(files)}")
     for name, path in tqdm(files, desc="Exportiere Embeddings"):
         img = Image.open(path).convert("RGB")
-        full_tensor = full_transform(crop_card_art(img, full_crop_cfg)).unsqueeze(0).to(device)
-        symbol_tensor = symbol_transform(crop_set_symbol(img, symbol_crop_cfg)).unsqueeze(0).to(device)
-        embedding = build_card_embedding(model, full_tensor, symbol_tensor).cpu().numpy().tolist()
+        full_tensor = _prepare_tensors(img, full_transform, full_crop_cfg, device)
+        embedding = build_card_embedding(model, full_tensor).cpu().numpy().tolist()
         meta = parse_scryfall_filename(name)
         if meta:
             card_uuid, set_code, collector_number, card_name = meta

@@ -8,8 +8,7 @@ import torch.nn.functional as F
 import torchvision.models as models
 
 
-def build_backbone(cfg: Dict) -> Tuple[nn.Module, int]:
-    encoder_cfg = cfg.get("encoder", {})
+def build_backbone(encoder_cfg: Dict) -> Tuple[nn.Module, int]:
     backbone_type = encoder_cfg.get("type", "resnet18").lower()
     if backbone_type == "resnet18":
         backbone = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
@@ -31,8 +30,7 @@ def build_embedding_head(in_dim: int, out_dim: int) -> nn.Module:
 
 class CardEncoder(nn.Module):
     """
-    Encoder mit getrennten Backbones fuer Full- und Symbolpfad.
-    Die resultierenden Embeddings werden konkateniert und L2-normalisiert.
+    Single-backbone Encoder fuer komplette Kartenbilder.
     """
 
     def __init__(self, cfg: Dict, num_classes: Optional[int] = None):
@@ -40,50 +38,40 @@ class CardEncoder(nn.Module):
         self.cfg = cfg
         self.num_classes = num_classes
 
-        self.backbone_full, full_out_dim = build_backbone(cfg)
-        self.backbone_symbol, symbol_out_dim = build_backbone(cfg)
-
         encoder_cfg = cfg.get("encoder", {})
-        self.emb_full_dim = int(encoder_cfg.get("emb_full", 512))
-        self.emb_symbol_dim = int(encoder_cfg.get("emb_symbol", 512))
+        self.emb_dim = int(encoder_cfg.get("emb_dim", encoder_cfg.get("emb_full", 1024)))
 
-        self.head_full = build_embedding_head(full_out_dim, self.emb_full_dim)
-        self.head_symbol = build_embedding_head(symbol_out_dim, self.emb_symbol_dim)
+        self.backbone, backbone_out_dim = build_backbone(encoder_cfg)
+        self.head = build_embedding_head(backbone_out_dim, self.emb_dim)
 
-        if num_classes:
-            self.classifier_full = nn.Linear(self.emb_full_dim, num_classes)
-            self.classifier_symbol = nn.Linear(self.emb_symbol_dim, num_classes)
-        else:
-            self.classifier_full = None
-            self.classifier_symbol = None
+        self.classifier = None
+        if num_classes is not None and num_classes > 0:
+            self.classifier = nn.Linear(self.emb_dim, num_classes)
 
-    def forward(self, x_full: torch.Tensor, x_crop: torch.Tensor, return_logits: bool = False):
-        emb_full = self._encode_branch(self.backbone_full, self.head_full, x_full)
-        emb_symbol = self._encode_branch(self.backbone_symbol, self.head_symbol, x_crop)
+    def forward(self, x: torch.Tensor, return_logits: bool = False):
+        """
+        x: Tensor der Form (B, C, H, W) – Full-Card-Bilder
+        """
+        emb = self._encode_branch(self.backbone, self.head, x)
+        emb = F.normalize(emb, p=2, dim=-1)
 
-        combined = torch.cat([emb_full, emb_symbol], dim=1)
-        combined = F.normalize(combined, p=2, dim=-1)
+        if not return_logits:
+            return emb
 
-        if return_logits:
-            logits_full = self.classifier_full(emb_full) if self.classifier_full is not None else None
-            logits_symbol = self.classifier_symbol(emb_symbol) if self.classifier_symbol is not None else None
-            return combined, (logits_full, logits_symbol)
-        return combined
+        logits = self.classifier(emb) if self.classifier is not None else None
+        return emb, logits
 
     def _encode_branch(self, backbone: nn.Module, head: nn.Module, x: torch.Tensor) -> torch.Tensor:
         feat = backbone(x)
         emb = head(feat)
-        return F.normalize(emb, p=2, dim=-1)
+        return emb
 
     @torch.no_grad()
-    def encode_normalized(self, x_full: torch.Tensor, x_crop: Optional[torch.Tensor] = None) -> torch.Tensor:
-        if x_crop is None:
-            if isinstance(x_full, (tuple, list)) and len(x_full) == 2:
-                x_full, x_crop = x_full
-            else:
-                raise ValueError("CardEncoder.encode_normalized erwartet full- und crop-Tensor.")
-        embedding = self.forward(x_full, x_crop)
-        return embedding
+    def encode_normalized(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim == 3:
+            x = x.unsqueeze(0)
+        emb = self.forward(x, return_logits=False)
+        return emb
 
 
 def build_encoder_model(cfg: Dict, num_classes: Optional[int] = None) -> CardEncoder:

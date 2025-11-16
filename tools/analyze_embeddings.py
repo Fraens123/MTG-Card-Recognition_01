@@ -9,7 +9,6 @@ from typing import Dict, List, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -29,7 +28,9 @@ def parse_args() -> argparse.Namespace:
         help="Path to YAML config that points to the embedding database.",
     )
     parser.add_argument(
+        "--database",
         "--db-path",
+        dest="database",
         type=str,
         default=None,
         help="Direct path to the embeddings JSON database (overrides config).",
@@ -72,9 +73,31 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_embeddings(config_path: str, explicit_db: str | None) -> tuple[Path, List[Dict], np.ndarray]:
-    cfg = load_config(config_path)
-    db_path = Path(explicit_db or cfg.get("database", {}).get("path", "./data/cards.json"))
+def load_embeddings_and_config(
+    config_path: str | None, explicit_db: str | None
+) -> tuple[Path, Dict, List[Dict], np.ndarray, float | None]:
+    """
+    Laedt Embeddings + optional Config. Gibt den Pfad zur DB, Config-Dict,
+    Kartenliste, Embedding-Array und optional den Recognition-Threshold zurueck.
+    """
+    # Play-Button fallback: wenn keine Argumente, versuche config.yaml
+    if not config_path and not explicit_db:
+        default_cfg = Path("config.yaml")
+        if default_cfg.exists():
+            config_path = str(default_cfg)
+        else:
+            raise ValueError("Bitte --config oder --database angeben.")
+
+    cfg: Dict = {}
+    threshold: float | None = None
+    if config_path:
+        cfg_path = Path(config_path)
+        if not cfg_path.exists():
+            raise FileNotFoundError(f"Config nicht gefunden: {cfg_path}")
+        cfg = load_config(config_path)
+        threshold = cfg.get("recognition", {}).get("threshold")
+
+    db_path = Path(explicit_db or cfg.get("database", {}).get("path", "./embeddings/card_embeddings.json"))
     if not db_path.exists():
         raise FileNotFoundError(f"Database JSON not found: {db_path}")
 
@@ -87,78 +110,164 @@ def load_embeddings(config_path: str, explicit_db: str | None) -> tuple[Path, Li
         raise ValueError("Embeddings array must be 2D [N, D].")
     if len(cards) != len(embeddings):
         raise ValueError("cards and embeddings must have the same length.")
-    return db_path, cards, embeddings
+    return db_path, cfg, cards, embeddings, threshold
 
 
-def compute_intra_card_stats(by_name: Dict[str, List[np.ndarray]]) -> tuple[List[Dict], np.ndarray]:
-    stats: List[Dict] = []
-    all_pair_sims: List[np.ndarray] = []
-    for name, vectors in by_name.items():
-        if len(vectors) < 2:
+def group_embeddings_by_card(cards: List[Dict], embeddings: np.ndarray) -> tuple[Dict[str, List[np.ndarray]], Dict[str, Dict]]:
+    """
+    Gruppiert Embeddings nach card_id (card_uuid foerderlich), faellt auf name zurueck.
+    """
+    by_card: Dict[str, List[np.ndarray]] = defaultdict(list)
+    meta: Dict[str, Dict] = {}
+    for emb, card in zip(embeddings, cards):
+        card_id = card.get("card_uuid") or card.get("name") or card.get("id") or "unknown"
+        by_card[card_id].append(emb)
+        meta[card_id] = card
+    return by_card, meta
+
+
+def _pairwise_cosine(values: np.ndarray) -> np.ndarray:
+    """Berechnet obere Dreieck-Cosine-Sims fuer normierte Vektoren."""
+    sims = values @ values.T
+    tri = np.triu_indices_from(sims, k=1)
+    return sims[tri]
+
+
+def compute_intra_card_metrics(
+    groups: Dict[str, List[np.ndarray]]
+) -> tuple[np.ndarray, np.ndarray, Dict[str, float], List[Dict]]:
+    intra_cos: List[np.ndarray] = []
+    per_card_stats: List[Dict] = []
+    for card_id, vecs in groups.items():
+        if len(vecs) < 2:
             continue
-        stacked = np.stack(vectors)
-        sim_matrix = cosine_similarity(stacked)
-        tri = np.triu_indices_from(sim_matrix, k=1)
-        pair_sims = sim_matrix[tri]
-        if pair_sims.size == 0:
+        stacked = np.stack(vecs)
+        cos_vals = _pairwise_cosine(stacked)
+        if cos_vals.size == 0:
             continue
-        stats.append(
+        dist_vals = 1.0 - cos_vals
+        per_card_stats.append(
             {
-                "name": name,
+                "card_id": card_id,
                 "count": stacked.shape[0],
-                "mean": float(np.mean(pair_sims)),
-                "min": float(np.min(pair_sims)),
-                "max": float(np.max(pair_sims)),
+                "mean_cos": float(np.mean(cos_vals)),
+                "mean_dist": float(np.mean(dist_vals)),
             }
         )
-        all_pair_sims.append(pair_sims)
+        intra_cos.append(cos_vals)
 
-    combined = np.concatenate(all_pair_sims) if all_pair_sims else np.array([], dtype=np.float32)
-    return stats, combined
+    cos_concat = np.concatenate(intra_cos) if intra_cos else np.array([], dtype=np.float32)
+    dist_concat = 1.0 - cos_concat if cos_concat.size else np.array([], dtype=np.float32)
+
+    stats = {
+        "mean_cos": float(np.mean(cos_concat)) if cos_concat.size else float("nan"),
+        "mean_dist": float(np.mean(dist_concat)) if dist_concat.size else float("nan"),
+        "median_dist": float(np.median(dist_concat)) if dist_concat.size else float("nan"),
+        "std_dist": float(np.std(dist_concat)) if dist_concat.size else float("nan"),
+    }
+    return cos_concat, dist_concat, stats, per_card_stats
 
 
-def sample_inter_card_similarities(
-    normalized_embeddings: np.ndarray,
-    names: Sequence[str],
-    num_samples: int,
+def _compute_centroids(groups: Dict[str, List[np.ndarray]]) -> tuple[np.ndarray, List[str]]:
+    ids: List[str] = []
+    centroids: List[np.ndarray] = []
+    for card_id, vecs in groups.items():
+        stacked = np.stack(vecs)
+        centroid = np.mean(stacked, axis=0)
+        norm = np.linalg.norm(centroid)
+        if norm > 0:
+            centroid = centroid / norm
+        ids.append(card_id)
+        centroids.append(centroid)
+    if not centroids:
+        return np.empty((0, 0), dtype=np.float32), ids
+    return np.stack(centroids), ids
+
+
+def compute_inter_card_metrics(
+    groups: Dict[str, List[np.ndarray]],
     rng: np.random.Generator,
-) -> np.ndarray:
-    total = len(names)
-    if total < 2:
-        return np.array([], dtype=np.float32)
-
-    sims: List[float] = []
-    max_attempts = num_samples * 20
-    attempts = 0
-    while len(sims) < num_samples and attempts < max_attempts:
-        i = rng.integers(0, total)
-        j = rng.integers(0, total)
-        attempts += 1
-        if i == j or names[i] == names[j]:
-            continue
-        sims.append(float(np.dot(normalized_embeddings[i], normalized_embeddings[j])))
-    return np.asarray(sims, dtype=np.float32)
-
-
-def print_worst_cards(card_stats: List[Dict], table_size: int):
-    if not card_stats:
-        print("No cards with >= 2 embeddings found; skipping intra-card table.")
-        return
-
-    sorted_stats = sorted(card_stats, key=lambda x: x["mean"])
-    print("\nCards with lowest intra-card mean cosine similarity:")
-    header = f"{'Card name':60} {'#Emb':>5} {'mean':>8} {'min':>8} {'max':>8}"
-    print(header)
-    print("-" * len(header))
-    for entry in sorted_stats[:table_size]:
-        name = entry["name"]
-        print(
-            f"{name[:60]:60} "
-            f"{entry['count']:>5d} "
-            f"{entry['mean']:>8.4f} "
-            f"{entry['min']:>8.4f} "
-            f"{entry['max']:>8.4f}"
+    max_cards: int = 8000,
+) -> tuple[np.ndarray, np.ndarray, Dict[str, float], np.ndarray, List[str]]:
+    """
+    Nutzt zentroidenbasierte Inter-Card-Distanzen.
+    Bei sehr vielen Karten wird auf max_cards gecuttet (random subset) aus Performance-Gruenden.
+    """
+    centroids, card_ids = _compute_centroids(groups)
+    total_cards = len(card_ids)
+    if total_cards < 2:
+        return (
+            np.array([], dtype=np.float32),
+            np.array([], dtype=np.float32),
+            {"mean_cos": float("nan"), "mean_dist": float("nan"), "median_dist": float("nan"), "std_dist": float("nan")},
+            centroids,
+            card_ids,
         )
+
+    if total_cards > max_cards:
+        idx = rng.choice(total_cards, size=max_cards, replace=False)
+        centroids = centroids[idx]
+        card_ids = [card_ids[i] for i in idx]
+
+    sim_matrix = centroids @ centroids.T  # cos bei normierten Zentroiden
+    np.fill_diagonal(sim_matrix, 0.0)
+    tri = np.triu_indices_from(sim_matrix, k=1)
+    cos_vals = sim_matrix[tri]
+    dist_vals = 1.0 - cos_vals
+    stats = {
+        "mean_cos": float(np.mean(cos_vals)),
+        "mean_dist": float(np.mean(dist_vals)),
+        "median_dist": float(np.median(dist_vals)),
+        "std_dist": float(np.std(dist_vals)),
+    }
+    return cos_vals, dist_vals, stats, centroids, card_ids
+
+
+def compute_glide_quality(D_aug: float, Dist_med: float) -> float:
+    return float(Dist_med / D_aug) if D_aug and D_aug == D_aug else float("nan")
+
+
+def summarize_intra_variance(per_card_stats: List[Dict], meta: Dict[str, Dict], top_n: int = 20):
+    if not per_card_stats:
+        print("[WARN] Keine Karten mit >=2 Embeddings fuer Intra-Analyse.")
+        return
+    sorted_cards = sorted(per_card_stats, key=lambda x: x["mean_dist"], reverse=True)
+    print("\n[WARN] Karten mit hoher Augmentierungs-Varianz (Intra-Card-Problem):")
+    for idx, entry in enumerate(sorted_cards[:top_n], start=1):
+        card = meta.get(entry["card_id"], {})
+        name = card.get("name", entry["card_id"])
+        print(f"  {idx:2d}) {name} (card_id={entry['card_id']}, mean_intra_dist={entry['mean_dist']:.4f}, n={entry['count']})")
+
+
+def summarize_confusable_cards(
+    centroids: np.ndarray, card_ids: List[str], meta: Dict[str, Dict], top_n: int = 20
+):
+    if len(card_ids) < 2:
+        print("[WARN] Zu wenige Karten fuer Inter-Card-Problem-Liste.")
+        return
+    sim_matrix = centroids @ centroids.T
+    np.fill_diagonal(sim_matrix, -np.inf)  # self ignore
+    nearest = np.argmax(sim_matrix, axis=1)
+    nearest_cos = sim_matrix[np.arange(len(card_ids)), nearest]
+    nearest_dist = 1.0 - nearest_cos
+    records = []
+    for idx, card_id in enumerate(card_ids):
+        neighbor_idx = int(nearest[idx])
+        neighbor_id = card_ids[neighbor_idx]
+        records.append(
+            {
+                "card_id": card_id,
+                "neighbor_id": neighbor_id,
+                "cos": float(nearest_cos[idx]),
+                "dist": float(nearest_dist[idx]),
+            }
+        )
+    records.sort(key=lambda x: x["dist"])  # kleinste Distanz = kritisch
+    print("\n[WARN] Karten mit sehr ähnlichen Nachbarn (Inter-Card-Problem):")
+    for idx, rec in enumerate(records[:top_n], start=1):
+        name_a = meta.get(rec["card_id"], {}).get("name", rec["card_id"])
+        name_b = meta.get(rec["neighbor_id"], {}).get("name", rec["neighbor_id"])
+        print(f"  {idx:2d}) {name_a} ~ {name_b} (cos={rec['cos']:.4f}, dist={rec['dist']:.4f})")
 
 
 def plot_similarity_histograms(
@@ -166,6 +275,10 @@ def plot_similarity_histograms(
     inter_values: np.ndarray,
     intra_mean: float | None,
     inter_mean: float | None,
+    D_aug: float | None,
+    Dist_med: float | None,
+    Q: float | None,
+    threshold: float | None,
 ):
     fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
     bins = np.linspace(0.0, 1.0, 41)
@@ -179,13 +292,28 @@ def plot_similarity_histograms(
         ax.set_xlabel("Cosine similarity")
         ax.set_xlim(0.0, 1.0)
         ax.grid(True, axis="y", linestyle="--", alpha=0.3)
-        if mean_value is not None:
+        if mean_value is not None and mean_value == mean_value:  # not NaN
             ax.axvline(mean_value, color="red", linestyle="--", label=f"mean={mean_value:.3f}")
+        if threshold is not None:
+            ax.axvline(threshold, color="green", linestyle=":", label=f"thr={threshold:.2f}")
+        if len(ax.get_lines()) > 0:
             ax.legend()
 
     _plot_hist(axes[0], intra_values, "Intra-card cosine similarities", intra_mean)
     _plot_hist(axes[1], inter_values, "Inter-card cosine similarities", inter_mean)
     axes[0].set_ylabel("Frequency")
+
+    if D_aug is not None and Dist_med is not None and Q is not None:
+        text = f"D_aug={D_aug:.3f}\nDist_med={Dist_med:.3f}\nQ={Q:.2f}"
+        axes[0].text(
+            0.05,
+            0.95,
+            text,
+            transform=axes[0].transAxes,
+            verticalalignment="top",
+            bbox=dict(boxstyle="round", fc="white", alpha=0.8),
+        )
+
     plt.tight_layout()
     plt.show()
 
@@ -256,57 +384,69 @@ def main():
     args = parse_args()
     rng = np.random.default_rng(args.seed)
 
-    db_path, cards, embeddings = load_embeddings(args.config, args.db_path)
-    names = [card.get("name", "unknown") for card in cards]
-
-    num_embeddings, dimension = embeddings.shape
-    unique_names = len(set(names))
-
-    print(f"Database path: {db_path}")
-    print(f"Total embeddings: {num_embeddings}")
-    print(f"Embedding dimension: {dimension}")
-    print(f"Unique card names: {unique_names}")
-
-    by_name: Dict[str, List[np.ndarray]] = defaultdict(list)
-    for emb, card in zip(embeddings, cards):
-        by_name[card.get("name", "unknown")].append(emb)
-
-    card_stats, intra_pair_sims = compute_intra_card_stats(by_name)
-    if card_stats:
-        mean_same = float(np.mean([entry["mean"] for entry in card_stats]))
-        min_same = float(np.min([entry["min"] for entry in card_stats]))
-        max_same = float(np.max([entry["max"] for entry in card_stats]))
-        print(
-            f"Intra-card mean similarity (averaged over cards): {mean_same:.4f} | "
-            f"min of mins: {min_same:.4f} | max of maxes: {max_same:.4f}"
-        )
-    else:
-        mean_same = min_same = max_same = None
-        print("No intra-card similarity stats available (need >=2 embeddings per card).")
-
-    print_worst_cards(card_stats, args.table_size)
-
+    db_path, cfg, cards, embeddings, cfg_threshold = load_embeddings_and_config(args.config, args.database)
+    # L2-Normalisierung absichern (Embeddings sollten schon normiert sein)
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    safe_norms = np.clip(norms, 1e-12, None)
-    normalized_embeddings = embeddings / safe_norms
-    inter_sims = sample_inter_card_similarities(
-        normalized_embeddings, names, args.diff_samples, rng
-    )
+    embeddings = embeddings / np.clip(norms, 1e-12, None)
 
-    if inter_sims.size > 0:
-        mean_inter = float(np.mean(inter_sims))
-        max_inter = float(np.max(inter_sims))
-        perc95 = float(np.percentile(inter_sims, 95))
-        print(
-            f"Inter-card similarities (different names): mean={mean_inter:.4f}, "
-            f"max={max_inter:.4f}, 95th percentile={perc95:.4f}"
-        )
-    else:
-        mean_inter = max_inter = perc95 = None
-        print("Not enough distinct card pairs to compute inter-card similarities.")
+    by_card, meta = group_embeddings_by_card(cards, embeddings)
+    num_embeddings, dimension = embeddings.shape
+    total_cards = len(by_card)
+    cards_with_multi = sum(1 for v in by_card.values() if len(v) >= 2)
+    names = [c.get("name", "unknown") for c in cards]
+
+    intra_cos, intra_dist, intra_stats, per_card_stats = compute_intra_card_metrics(by_card)
+    inter_cos, inter_dist, inter_stats, centroids, centroid_ids = compute_inter_card_metrics(by_card, rng)
+
+    D_aug = intra_stats["mean_dist"]
+    Dist_med = inter_stats["median_dist"]
+    Q = compute_glide_quality(D_aug, Dist_med)
+
+    print("=" * 60)
+    print("[QUALITY] Glide-Style Embedding-Analyse")
+    print("=" * 60)
+    print(f"Karten (>=1 Embedding):          {total_cards}")
+    print(f"Karten (>=2 Embeddings):         {cards_with_multi}")
+    print(f"Total embeddings:                {num_embeddings}")
+    print(f"Embedding dimension:             {dimension}")
+
+    print("\nIntra-Card (gleiche Karte):")
+    print(f"  mean(cos)   = {intra_stats['mean_cos']:.4f}")
+    print(f"  mean(dist)  = {intra_stats['mean_dist']:.4f}")
+    print(f"  median(dist)= {intra_stats['median_dist']:.4f}")
+    print(f"  std(dist)   = {intra_stats['std_dist']:.4f}")
+
+    print("\nInter-Card (verschiedene Karten, Zentroiden):")
+    print(f"  mean(cos)   = {inter_stats['mean_cos']:.4f}")
+    print(f"  mean(dist)  = {inter_stats['mean_dist']:.4f}")
+    print(f"  median(dist)= {inter_stats['median_dist']:.4f}")
+    print(f"  std(dist)   = {inter_stats['std_dist']:.4f}")
+
+    print("\nGlide-Style Kennzahlen:")
+    print(f"  D_aug    = {D_aug:.4f}")
+    print(f"  Dist_med = {Dist_med:.4f}")
+    print(f"  Q = Dist_med / D_aug = {Q:.2f}")
+
+    thr_cfg = cfg_threshold
+    thr_low = 1.0 - Dist_med if Dist_med == Dist_med else float("nan")
+    thr_high = 1.0 - (D_aug * 1.5) if D_aug == D_aug else float("nan")
+    print("\nEmpfehlung (Heuristik):")
+    print(f"  Cosine-Threshold ~ zwischen {thr_high:.3f} und {thr_low:.3f}")
+    if thr_cfg is not None:
+        print(f"  Aktueller Threshold aus config: {thr_cfg:.3f}")
+
+    summarize_intra_variance(per_card_stats, meta, top_n=args.table_size)
+    summarize_confusable_cards(centroids, centroid_ids, meta, top_n=args.table_size)
 
     plot_similarity_histograms(
-        intra_pair_sims, inter_sims, mean_same if mean_same is not None else None, mean_inter
+        intra_cos,
+        inter_cos,
+        intra_stats["mean_cos"],
+        inter_stats["mean_cos"],
+        D_aug,
+        Dist_med,
+        Q,
+        thr_cfg,
     )
 
     if args.tsne:

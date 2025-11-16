@@ -2,8 +2,6 @@
 import os
 import sys
 from pathlib import Path
-from typing import Tuple
-
 import torch
 from torch import nn
 from torch.optim import Adam
@@ -55,22 +53,13 @@ def _freeze_model(model: nn.Module, freeze_ratio: float) -> None:
     freeze_ratio = max(0.0, min(1.0, freeze_ratio))
     if freeze_ratio == 0:
         return
-    _freeze_backbone_layers(model.backbone_full, freeze_ratio)
-    _freeze_backbone_layers(model.backbone_symbol, freeze_ratio)
+    _freeze_backbone_layers(model.backbone, freeze_ratio)
 
 
 def _compute_losses(
-    logits: Tuple[torch.Tensor, torch.Tensor],
-    labels: torch.Tensor,
-    ce_full_weight: float,
-    ce_symbol_weight: float,
-    criterion: nn.Module,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    logits_full, logits_symbol = logits
-    loss_full = criterion(logits_full, labels) if logits_full is not None else torch.zeros(1, device=labels.device)
-    loss_symbol = criterion(logits_symbol, labels) if logits_symbol is not None else torch.zeros(1, device=labels.device)
-    combined = ce_full_weight * loss_full + ce_symbol_weight * loss_symbol
-    return combined, loss_full.detach(), loss_symbol.detach()
+    logits: torch.Tensor, labels: torch.Tensor, criterion: nn.Module
+) -> torch.Tensor:
+    return criterion(logits, labels)
 
 
 def main() -> None:
@@ -104,8 +93,6 @@ def main() -> None:
 
     optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=float(train_cfg.get("lr", 1e-4)))
     triplet_loss = nn.TripletMarginLoss(margin=float(train_cfg.get("margin", 0.35)), p=2)
-    ce_weight_full = float(train_cfg.get("ce_full_weight", 0.3))
-    ce_weight_symbol = float(train_cfg.get("ce_symbol_weight", 1.0))
     ce_loss = nn.CrossEntropyLoss()
 
     debug_root = cfg.get("paths", {}).get("debug_dir", "./debug")
@@ -122,52 +109,33 @@ def main() -> None:
         model.train()
         running_triplet = 0.0
         running_ce = 0.0
-        running_full = 0.0
-        running_symbol = 0.0
         for batch in tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}"):
-            (
-                anchor_full,
-                anchor_symbol,
-                pos_full,
-                pos_symbol,
-                neg_full,
-                neg_symbol,
-                labels,
-            ) = [b.to(device) for b in batch]
+            anchor_full, pos_full, neg_full, labels = [b.to(device, non_blocking=True) for b in batch]
             optimizer.zero_grad()
 
-            anchor_emb, anchor_logits = model(anchor_full, anchor_symbol, return_logits=True)
-            pos_emb = model(pos_full, pos_symbol)
-            neg_emb = model(neg_full, neg_symbol)
+            anchor_emb, anchor_logits = model(anchor_full, return_logits=True)
+            if anchor_logits is None:
+                raise RuntimeError("Classifier ist nicht konfiguriert (num_classes fehlt).")
+            pos_emb = model(pos_full)
+            neg_emb = model(neg_full)
 
             loss_triplet = triplet_loss(anchor_emb, pos_emb, neg_emb)
-            loss_ce_total, loss_ce_full, loss_ce_symbol = _compute_losses(
-                anchor_logits, labels, ce_weight_full, ce_weight_symbol, ce_loss
-            )
+            loss_ce_total = _compute_losses(anchor_logits, labels, ce_loss)
             total_loss = loss_triplet + loss_ce_total
             total_loss.backward()
             optimizer.step()
 
             running_triplet += loss_triplet.item()
             running_ce += loss_ce_total.item()
-            running_full += loss_ce_full.item()
-            running_symbol += loss_ce_symbol.item()
 
         avg_triplet = running_triplet / len(dataloader)
         avg_ce = running_ce / len(dataloader)
-        avg_full = running_full / len(dataloader)
-        avg_symbol = running_symbol / len(dataloader)
         total = avg_triplet + avg_ce
 
         writer.add_scalar("loss/triplet", avg_triplet, epoch)
-        writer.add_scalar("loss/ce_total", avg_ce, epoch)
-        writer.add_scalar("loss/ce_full", avg_full, epoch)
-        writer.add_scalar("loss/ce_symbol", avg_symbol, epoch)
+        writer.add_scalar("loss/ce", avg_ce, epoch)
         writer.add_scalar("loss/total", total, epoch)
-        print(
-            f"[Epoch {epoch + 1}] total={total:.4f} triplet={avg_triplet:.4f} "
-            f"CE={avg_ce:.4f} (full={avg_full:.4f}, symbol={avg_symbol:.4f})"
-        )
+        print(f"[Epoch {epoch + 1}] total={total:.4f} triplet={avg_triplet:.4f} CE={avg_ce:.4f}")
 
         if total < best_loss:
             best_loss = total

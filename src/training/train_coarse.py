@@ -2,8 +2,6 @@
 import os
 import sys
 from pathlib import Path
-from typing import Tuple
-
 import torch
 from torch import nn
 from torch.optim import Adam
@@ -39,18 +37,8 @@ def _build_dataloader(dataset: CoarseDataset, train_cfg: dict) -> DataLoader:
     )
 
 
-def _compute_losses(
-    logits: Tuple[torch.Tensor, torch.Tensor],
-    labels: torch.Tensor,
-    ce_full_weight: float,
-    ce_symbol_weight: float,
-    criterion: nn.Module,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    logits_full, logits_symbol = logits
-    loss_full = criterion(logits_full, labels) if logits_full is not None else torch.zeros(1, device=labels.device)
-    loss_symbol = criterion(logits_symbol, labels) if logits_symbol is not None else torch.zeros(1, device=labels.device)
-    total = ce_full_weight * loss_full + ce_symbol_weight * loss_symbol
-    return total, loss_full.detach(), loss_symbol.detach()
+def _compute_losses(logits: torch.Tensor, labels: torch.Tensor, criterion: nn.Module) -> torch.Tensor:
+    return criterion(logits, labels)
 
 
 def main() -> None:
@@ -74,8 +62,6 @@ def main() -> None:
     model = build_encoder_model(cfg, num_classes=len(dataset.card_ids)).to(device)
     print(f"[MODEL] Backbone={cfg['encoder']['type']} | Klassen={len(dataset.card_ids)}")
     optimizer = Adam(model.parameters(), lr=float(train_cfg.get("lr", 1e-3)))
-    ce_weight_full = float(train_cfg.get("ce_full_weight", 1.0))
-    ce_weight_symbol = float(train_cfg.get("ce_symbol_weight", 1.0))
     ce_loss = nn.CrossEntropyLoss()
 
     debug_root = cfg.get("paths", {}).get("debug_dir", "./debug")
@@ -91,29 +77,28 @@ def main() -> None:
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
-        running_full = 0.0
-        running_symbol = 0.0
-        for batch in tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}"):
+        running_acc = 0.0
+        for full_batch, labels in tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}"):
             optimizer.zero_grad()
-            full_batch, symbol_batch, labels = [b.to(device) for b in batch]
-            embeddings, logits = model(full_batch, symbol_batch, return_logits=True)
-            total_loss, loss_full, loss_symbol = _compute_losses(
-                logits, labels, ce_weight_full, ce_weight_symbol, ce_loss
-            )
+            full_batch = full_batch.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
+
+            embeddings, logits = model(full_batch, return_logits=True)
+            if logits is None:
+                raise RuntimeError("Classifier ist nicht konfiguriert (num_classes fehlt).")
+            total_loss = _compute_losses(logits, labels, ce_loss)
             total_loss.backward()
             optimizer.step()
 
             running_loss += total_loss.item()
-            running_full += loss_full.item()
-            running_symbol += loss_symbol.item()
+            preds = logits.argmax(dim=1) if logits is not None else torch.empty_like(labels)
+            running_acc += (preds == labels).float().mean().item()
 
         avg_loss = running_loss / len(dataloader)
-        avg_full = running_full / len(dataloader)
-        avg_symbol = running_symbol / len(dataloader)
+        avg_acc = running_acc / len(dataloader)
         writer.add_scalar("loss/total", avg_loss, epoch)
-        writer.add_scalar("loss/full_ce", avg_full, epoch)
-        writer.add_scalar("loss/symbol_ce", avg_symbol, epoch)
-        print(f"[Epoch {epoch + 1}] total={avg_loss:.4f} fullCE={avg_full:.4f} symbolCE={avg_symbol:.4f}")
+        writer.add_scalar("metrics/accuracy", avg_acc, epoch)
+        print(f"[Epoch {epoch + 1}] total={avg_loss:.4f} acc={avg_acc:.4f}")
 
         if avg_loss < best_loss:
             best_loss = avg_loss

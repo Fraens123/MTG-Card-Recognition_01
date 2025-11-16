@@ -2,6 +2,7 @@
 data/*.json
 models/*.json
 output_matches/*.json
+embeddings/*.json
 *.sqlite
 *.db
 data/cards.json
@@ -23,6 +24,7 @@ data/*/
 debug/
 output_matches/
 tools/visualization/exports/
+embeddings/
 # Python
 __pycache__/
 *.py[cod]
@@ -58,7 +60,6 @@ venv.bak/
 .venv/
 
 # Configuration files (enthalten sensible Daten)
-config.yaml
 .env
 
 # Data directories (too large for git)

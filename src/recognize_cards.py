@@ -33,9 +33,7 @@ from src.core.model_builder import load_encoder
 from src.core.card_database import SimpleCardDB
 from src.core.image_ops import (
     build_resize_normalize_transform,
-    crop_set_symbol,
     crop_card_art,
-    get_set_symbol_crop_cfg,
     get_full_art_crop_cfg,
     resolve_resize_hw,
 )
@@ -97,16 +95,14 @@ class CropDebugger:
         if self.limit > 0 and self.directory:
             self.directory.mkdir(parents=True, exist_ok=True)
 
-    def record(self, card_img: Optional[Image.Image], art_img: Image.Image, symbol_img: Image.Image, source: str):
+    def record(self, card_img: Optional[Image.Image], art_img: Image.Image, source: str):
         if self.limit <= 0 or self.directory is None or self.count >= self.limit:
             return
         stem = Path(source).stem
         art_path = self.directory / f"{stem}_art_{self.count:02d}.png"
-        symbol_path = self.directory / f"{stem}_symbol_{self.count:02d}.png"
         card_path = self.directory / f"{stem}_card_{self.count:02d}.png" if card_img else None
         try:
             art_img.save(art_path)
-            symbol_img.save(symbol_path)
             if card_img and card_path:
                 card_img.save(card_path)
             self.count += 1
@@ -265,13 +261,11 @@ def create_comparison_plot(
 def search_camera_image(
     model: torch.nn.Module,
     transform: T.Compose,
-    crop_transform: T.Compose,
     db: SimpleCardDB,
     camera_img_path: str,
     device: torch.device,
     config: dict,
     art_crop_cfg: Optional[dict],
-    crop_cfg: Optional[dict],
     debug_recorder=None,
 ) -> Tuple[Optional[Dict], float, float]:
     """Berechnet das Query-Embedding und sucht den besten Match in der Datenbank."""
@@ -284,16 +278,14 @@ def search_camera_image(
         card_roi_cfg = camera_cfg.get("card_roi", None)
         card_img = crop_card_roi(rgb, card_roi_cfg)
 
-        # DANN wie bisher: Artwork- und Set-Symbol-Crop auf der normierten Karte
+        # DANN wie bisher: Artwork-Crop auf der normierten Karte
         art_img = crop_card_art(card_img, art_crop_cfg)
-        crop_img = crop_set_symbol(card_img, crop_cfg)
         if debug_recorder:
-            debug_recorder(card_img, art_img, crop_img, camera_img_path)
+            debug_recorder(card_img, art_img, camera_img_path)
         full_tensor = transform(art_img).unsqueeze(0).to(device)
-        crop_tensor = crop_transform(crop_img).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        query_embedding = build_card_embedding(model, full_tensor, crop_tensor).cpu().numpy().flatten()
+        query_embedding = build_card_embedding(model, full_tensor).cpu().numpy().flatten()
 
     search_cfg = config.get("recognition", {})
     top_k = search_cfg.get("top_k", 5)
@@ -341,16 +333,13 @@ def test_all_camera_images(
             f"{db_model}. Bitte export_embeddings.py mit dem aktuellen Modell neu ausfuehren."
         )
 
-    resize_hw = resolve_resize_hw(config, config["data"]["scryfall_images"])
+    paths_cfg = config.get("paths", {})
+    resize_hw = resolve_resize_hw(config, paths_cfg.get("scryfall_dir"))
     target_height, target_width = resize_hw
     transform = get_inference_transforms(resize_hw)
     print(f"[INFO] Inference-Bildgroesse (Breite x Hoehe): {target_width}x{target_height}")
 
     art_cfg = get_full_art_crop_cfg(config)
-    crop_cfg = get_set_symbol_crop_cfg(config)
-    crop_height = crop_cfg.get("target_height", 64) if crop_cfg else 64
-    crop_width = crop_cfg.get("target_width", 160) if crop_cfg else 160
-    crop_transform = build_resize_normalize_transform((crop_height, crop_width))
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -385,13 +374,11 @@ def test_all_camera_images(
             best_match, similarity_score, search_time = search_camera_image(
                 model,
                 transform,
-                crop_transform,
                 db,
                 str(camera_file),
                 device,
                 config,
                 art_cfg,
-                crop_cfg,
                 crop_dump.record if crop_dump.directory else None,
             )
             total_time += search_time
@@ -525,9 +512,11 @@ def main() -> None:
 
     try:
         config = load_config(args.config)
-        model_path = args.model_path or config["model"]["weights_path"]
-        camera_dir = args.camera_dir or config["data"]["camera_images"]
-        output_dir = args.output_dir or config["data"]["output_dir"]
+        paths_cfg = config.get("paths", {})
+        default_model_path = os.path.join(paths_cfg.get("models_dir", "./models"), "encoder_fine.pt")
+        model_path = args.model_path or default_model_path
+        camera_dir = args.camera_dir or paths_cfg.get("camera_dir", "./data/camera_images")
+        output_dir = args.output_dir or paths_cfg.get("output_dir", "./output_matches")
 
         device = torch.device("cuda" if torch.cuda.is_available() and config["hardware"]["use_cuda"] else "cpu")
         print("[INFO] MTG Card Similarity Search")
@@ -541,7 +530,7 @@ def main() -> None:
 
         if not os.path.exists(model_path):
             print(f"[ERROR] Modell nicht gefunden: {model_path}")
-            print("        Bitte train_triplet.py ausfuehren.")
+            print("        Bitte zuerst train_coarse.py und train_fine.py ausfuehren.")
             return
 
         camera_path = Path(camera_dir)

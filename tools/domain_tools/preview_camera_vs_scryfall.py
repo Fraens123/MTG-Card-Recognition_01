@@ -5,8 +5,8 @@ Vergleicht Pi-Cam-ROI/Crops mit den entsprechenden Scryfall-Crops.
 Speichert pro Kamera-Bild ein Preview mit:
 - Originalfoto inkl. eingezeichneter ROI
 - ROI-Ausschnitt (normierte Karte)
-- Artwork- und Set-Symbol-Crop dieses Kamera-Bildes
-- (falls vorhanden) Original Scryfall-Bild + dessen Artwork- und Symbol-Crop
+- Artwork-Crop dieses Kamera-Bildes
+- (falls vorhanden) Original Scryfall-Bild + dessen Artwork-Crop
 """
 
 from __future__ import annotations
@@ -23,12 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.core.image_ops import (
-    crop_card_art,
-    crop_set_symbol,
-    get_full_art_crop_cfg,
-    get_set_symbol_crop_cfg,
-)
+from src.core.image_ops import crop_card_art, get_full_art_crop_cfg
 
 
 def load_config(path: str) -> dict:
@@ -156,21 +151,21 @@ def stack_sections(sections: List[List[Image.Image]], gap: int = 12) -> Image.Im
 def main() -> None:
     parser = argparse.ArgumentParser(description="Vergleich Pi-Cam Crops vs. Scryfall Crops")
     parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--camera-dir", default=None, help="Override fuer data.camera_images")
-    parser.add_argument("--scryfall-dir", default=None, help="Override fuer data.scryfall_images")
+    parser.add_argument("--camera-dir", default=None, help="Override fuer paths.camera_dir")
+    parser.add_argument("--scryfall-dir", default=None, help="Override fuer paths.scryfall_dir")
     parser.add_argument("--max-images", type=int, default=5)
     parser.add_argument("--output-dir", default="debug/camera_vs_scryfall")
     args = parser.parse_args()
 
     config = load_config(args.config)
-    camera_dir = Path(args.camera_dir or config["data"]["camera_images"])
-    scryfall_dir = Path(args.scryfall_dir or config["data"]["scryfall_images"])
+    paths_cfg = config.get("paths", {})
+    camera_dir = Path(args.camera_dir or paths_cfg.get("camera_dir", "./data/camera_images"))
+    scryfall_dir = Path(args.scryfall_dir or paths_cfg.get("scryfall_dir", "./data/scryfall_images"))
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     roi_cfg = config.get("camera", {}).get("card_roi", None)
     art_cfg = get_full_art_crop_cfg(config)
-    symbol_cfg = get_set_symbol_crop_cfg(config)
 
     cam_files = sorted([p for p in camera_dir.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"}])
     if not cam_files:
@@ -187,13 +182,11 @@ def main() -> None:
         overlay = draw_roi_overlay(cam_img, roi_cfg)
         card = crop_card_roi(cam_img, roi_cfg)
         cam_art = crop_card_art(card, art_cfg)
-        cam_symbol = crop_set_symbol(card, symbol_cfg)
 
         tiles_camera = [
             prepare_tile(overlay, "Pi-Cam Original + ROI", 900),
             prepare_tile(card, "Pi-Cam ROI-Karte", 900),
             prepare_tile(cam_art, "Pi-Cam Artwork-Crop", 900),
-            prepare_tile(cam_symbol, "Pi-Cam Set-Symbol-Crop", 900),
         ]
 
         tiles_scryfall: List[Image.Image] = []
@@ -207,11 +200,9 @@ def main() -> None:
             with Image.open(scry_path) as scry_img_raw:
                 scry_img = scry_img_raw.convert("RGB")
             scry_art = crop_card_art(scry_img, art_cfg)
-            scry_symbol = crop_set_symbol(scry_img, symbol_cfg)
             tiles_scryfall = [
                 prepare_tile(scry_img, f"Scryfall Original {fallback_label}".strip(), 900),
                 prepare_tile(scry_art, "Scryfall Artwork-Crop", 900),
-                prepare_tile(scry_symbol, "Scryfall Set-Symbol-Crop", 900),
             ]
 
         preview = stack_sections([tiles_camera, tiles_scryfall])

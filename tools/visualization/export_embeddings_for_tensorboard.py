@@ -7,14 +7,13 @@ from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
 import torch
-import torch.nn.functional as F
 import torchvision.transforms as T
 import yaml
 from PIL import Image
 
 sys.path.insert(0, ".")
 from src.core.model_builder import load_encoder  # noqa: E402
-from src.core.image_ops import crop_set_symbol  # noqa: E402
+from src.core.embedding_utils import build_card_embedding  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -142,21 +141,11 @@ def build_transform(target_size: Sequence[int]) -> T.Compose:
 
 
 def encode_search_embedding(model, image: Image.Image, transform: T.Compose, device: torch.device):
-    """
-    Repliziert die Embedding-Pipeline aus export_embeddings.py:
-    full + crop je normalisieren, konkatten, erneut normalisieren.
-    """
+    """Repliziert die Embedding-Pipeline aus export_embeddings.py fuer Full-Card-Bilder."""
     tensor_full = transform(image).unsqueeze(0).to(device)
-    crop_image = crop_set_symbol(image, None)
-    tensor_crop = transform(crop_image).unsqueeze(0).to(device)
-
     with torch.no_grad():
-        emb_full = F.normalize(model(tensor_full), p=2, dim=-1)
-        emb_crop = F.normalize(model(tensor_crop), p=2, dim=-1)
-        combined = torch.cat([emb_full, emb_crop], dim=-1)
-        combined = F.normalize(combined, p=2, dim=-1)
-
-    return combined.squeeze(0).cpu().tolist()
+        emb = build_card_embedding(model, tensor_full)
+    return emb.cpu().tolist()
 
 
 def sanitize_text(value: object) -> str:
@@ -327,22 +316,22 @@ def main():
             limit=args.limit,
         )
     else:
-        model_path = resolve_path(args.model or config["model"]["weights_path"], REPO_ROOT)
-        images_dir = resolve_path(config["data"]["scryfall_images"], REPO_ROOT)
+        paths_cfg = config.get("paths", {})
+        default_model_path = Path(paths_cfg.get("models_dir", "./models")) / "encoder_fine.pt"
+        model_path = resolve_path(args.model or default_model_path, REPO_ROOT)
+        images_dir = resolve_path(paths_cfg.get("scryfall_dir", "./data/scryfall_images"), REPO_ROOT)
 
-        embed_dim = config["model"]["embed_dim"]
-        training_cfg = config.get("training", {})
-        target_width = training_cfg.get("target_width", 224)
-        target_height = training_cfg.get("target_height", 320)
-        resize_hw = (target_height, target_width)
+        images_cfg = config.get("images", {})
+        full_size = images_cfg.get("full_card_size", [224, 320])
+        resize_hw = tuple(reversed(full_size))
 
         if args.cpu:
             device = torch.device("cpu")
         else:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        print(f"[INFO] Lade Modell {model_path} (dim={embed_dim}) auf {device}")
-        model = load_encoder(str(model_path), embed_dim=embed_dim, device=device)
+        print(f"[INFO] Lade Modell {model_path} auf {device}")
+        model = load_encoder(str(model_path), cfg=config, device=device)
 
         cards = load_cards(cards_json)
         print(f"[INFO] Karten im JSON: {len(cards)}")
