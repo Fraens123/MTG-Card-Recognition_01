@@ -1,6 +1,19 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+from typing import List
+
+import numpy as np
 import torch
+
+
+def l2_normalize(v: np.ndarray) -> np.ndarray:
+    norm = np.linalg.norm(v)
+    return v / norm if norm > 0 else v
+
+
+def compute_centroid(vectors: List[np.ndarray]) -> np.ndarray:
+    c = np.mean(vectors, axis=0)
+    return l2_normalize(c)
 
 
 def build_card_embedding(model: torch.nn.Module, full_tensor: torch.Tensor) -> torch.Tensor:

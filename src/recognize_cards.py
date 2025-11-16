@@ -362,11 +362,8 @@ def test_all_camera_images(
     total_searches = len(camera_files)
 
     print("\n[RUN] Starte Similarity-Search fuer alle Camera-Bilder ...")
-    debug_cfg = config.get("debug", {})
-    crop_dump = CropDebugger(
-        Path(debug_cfg.get("camera_crop_dump_dir", "")) if debug_cfg.get("camera_crop_dump_dir") else None,
-        debug_cfg.get("camera_crop_dump_count", 0),
-    )
+    # Kamera-Crop-Dumps sind deaktiviert (nicht mehr benötigt).
+    crop_dump = None
 
     for idx, camera_file in enumerate(tqdm(camera_files, desc="Camera-Bilder", unit="img"), start=1):
         try:
@@ -379,7 +376,7 @@ def test_all_camera_images(
                 device,
                 config,
                 art_cfg,
-                crop_dump.record if crop_dump.directory else None,
+                None,
             )
             total_time += search_time
             match_scores.append(float(similarity_score))

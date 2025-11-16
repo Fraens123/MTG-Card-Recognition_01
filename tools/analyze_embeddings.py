@@ -22,6 +22,12 @@ def parse_args() -> argparse.Namespace:
         description="Analyse card embeddings for intra-/inter-card cosine similarities."
     )
     parser.add_argument(
+        "--mode",
+        choices=["runtime", "analysis"],
+        default="analysis",
+        help="Welchen Export-Modus aus der config laden (default: analysis).",
+    )
+    parser.add_argument(
         "--config",
         type=str,
         default="config.yaml",
@@ -74,7 +80,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_embeddings_and_config(
-    config_path: str | None, explicit_db: str | None
+    config_path: str | None, explicit_db: str | None, mode: str = "analysis"
 ) -> tuple[Path, Dict, List[Dict], np.ndarray, float | None]:
     """
     Laedt Embeddings + optional Config. Gibt den Pfad zur DB, Config-Dict,
@@ -97,7 +103,19 @@ def load_embeddings_and_config(
         cfg = load_config(config_path)
         threshold = cfg.get("recognition", {}).get("threshold")
 
-    db_path = Path(explicit_db or cfg.get("database", {}).get("path", "./embeddings/card_embeddings.json"))
+    export_key = "embedding_export_analysis" if mode == "analysis" else "embedding_export_runtime"
+    export_cfg = cfg.get(export_key, {})
+
+    if explicit_db:
+        db_path = Path(explicit_db)
+    else:
+        if not export_cfg:
+            raise KeyError(f"Config-Block '{export_key}' fehlt oder ist leer.")
+        default_db = export_cfg.get("output_path")
+        if not default_db:
+            raise ValueError(f"output_path fehlt im Config-Block '{export_key}'.")
+        db_path = Path(default_db)
+
     if not db_path.exists():
         raise FileNotFoundError(f"Database JSON not found: {db_path}")
 
@@ -384,7 +402,8 @@ def main():
     args = parse_args()
     rng = np.random.default_rng(args.seed)
 
-    db_path, cfg, cards, embeddings, cfg_threshold = load_embeddings_and_config(args.config, args.database)
+    db_path, cfg, cards, embeddings, cfg_threshold = load_embeddings_and_config(args.config, args.database, args.mode)
+    print(f"[LOAD] Embedding-DB ({args.mode}): {db_path}")
     # L2-Normalisierung absichern (Embeddings sollten schon normiert sein)
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     embeddings = embeddings / np.clip(norms, 1e-12, None)

@@ -1,0 +1,8 @@
+Runtime-Export (1 Zentroid pro Karte):
+python -m src.training.export_embeddings --config config.yaml --mode runtime
+
+Analyse-Export (alle Augs + Zentroid):
+python -m src.training.export_embeddings --config config.yaml --mode analysis
+
+Danach kannst du den Analyse-Plot fahren:
+python -m tools.analyze_embeddings --config config.yaml --mode analysis
