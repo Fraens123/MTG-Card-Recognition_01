@@ -18,7 +18,7 @@ images:
 
 encoder:
   type: resnet18    # resnet18
-  emb_dim: 1024     # Dimension bleibt unverändert
+  emb_dim: 1024     # Dimension bleibt unveraendert
 
 training:
   coarse:
@@ -65,8 +65,7 @@ recognition:
   threshold: 0.55
 
 database:
-  path: ./embeddings/card_embeddings.json # Runtime Datenbank
-  #path: ./embeddings/card_embeddings_analysis.json # Analyse Datenbank  
+  sqlite_path: tcg_database/database/karten.db
 
 vector:
   dimension: 1024
@@ -109,7 +108,6 @@ embedding_export_runtime:
   use_centroid: true
   append_individual: false
   append_centroid: false
-  output_path: ./embeddings/card_embeddings.json
   export_batch_size: 64
   num_workers: 4
 
@@ -120,6 +118,5 @@ embedding_export_analysis:
   use_centroid: false
   append_individual: true
   append_centroid: true
-  output_path: ./embeddings/card_embeddings_analysis.json
   export_batch_size: 64
   num_workers: 4

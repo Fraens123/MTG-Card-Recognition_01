@@ -12,7 +12,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.core.config_utils import load_config
 from src.core.embedding_utils import compute_centroid, l2_normalize
 from tools.analyze_embeddings import (
     compute_glide_quality,
@@ -31,7 +30,7 @@ def parse_args() -> argparse.Namespace:
         dest="database",
         type=str,
         default=None,
-        help="Direkter Pfad zur Analysis-Embedding-Datenbank (ueberschreibt config).",
+        help="Direkter Pfad zur SQLite-Embedding-Datenbank (ueberschreibt config).",
     )
     parser.add_argument("--max-cards", type=int, default=500, help="Maximale Anzahl Karten fuer die Heatmap.")
     parser.add_argument(

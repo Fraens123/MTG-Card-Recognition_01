@@ -232,7 +232,7 @@ class TripletImageDataset(Dataset):
         self.card_ids = sorted(self.card_to_paths.keys())
         self.card_to_idx = {card_id: idx for idx, card_id in enumerate(self.card_ids)}
         self.total_images = sum(len(p) for p in self.card_to_paths.values())
-        self.max_triplets = int(fine_cfg.get("max_samples_per_epoch", self.total_images)) or self.total_images
+        self.max_triplets = self.total_images
         cache_size = 0
         if fine_cfg.get("cache_images", False):
             cache_size = int(fine_cfg.get("cache_size", 0))

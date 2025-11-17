@@ -317,9 +317,9 @@ def test_all_camera_images(
     print(f"[INFO] Erkennung verwendet Modell: {model_path}")
 
     print("[INFO] Lade Embedding-Datenbank ...")
-    db_path = config.get("database", {}).get("path", "./data/cards.json")
+    db_path = config.get("database", {}).get("sqlite_path", "tcg_database/database/karten.db")
     db = SimpleCardDB(db_path=db_path, config_path=config_path)
-    print(f"[INFO] Erkennung verwendet Embedding-DB: {db.db_path}")
+    print(f"[INFO] Erkennung verwendet Embedding-DB (SQLite): {db.db_path}")
     if len(db.cards) == 0:
         print("[WARN] Database ist leer. Bitte zuerst export_embeddings.py ausfuehren.")
         return
@@ -537,7 +537,7 @@ def main() -> None:
             camera_path.mkdir(parents=True, exist_ok=True)
             return
 
-        db_path = config["database"]["path"]
+        db_path = config.get("database", {}).get("sqlite_path", "tcg_database/database/karten.db")
         if not os.path.exists(db_path):
             print(f"[ERROR] Database nicht gefunden: {db_path}")
             print("        Bitte zuerst Embeddings generieren (export_embeddings.py).")

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import List, Tuple
@@ -15,12 +14,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.core.config_utils import load_config
+from src.core.sqlite_store import load_flat_samples
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="t-SNE 3D visualization of card embeddings")
     parser.add_argument("--config", type=str, default="config.yaml", help="Pfad zu config.yaml")
-    parser.add_argument("--database", type=str, default=None, help="Pfad zu einer JSON-Embedding-DB")
+    parser.add_argument("--database", type=str, default=None, help="Pfad zu einer SQLite-Embedding-DB")
+    parser.add_argument("--mode", type=str, default="runtime", choices=["runtime", "analysis"], help="Welcher Modus soll geladen werden")
     parser.add_argument("--perplexity", type=float, default=30.0, help="t-SNE perplexity")
     parser.add_argument("--max-cards", type=int, default=1000, help="maximale Anzahl Karten fuer t-SNE")
     parser.add_argument("--save", type=str, default=None, help="Optionaler Pfad zum Speichern des Plots (PNG)")
@@ -30,36 +31,20 @@ def parse_args() -> argparse.Namespace:
 def _resolve_database_path(cfg: dict, explicit: str | None) -> Path:
     if explicit:
         return Path(explicit)
-    runtime_cfg = cfg.get("embedding_export_runtime", {}) or {}
-    db_path = runtime_cfg.get("output_path") or cfg.get("database", {}).get("path")
-    if not db_path:
-        raise ValueError("Kein Datenbank-Pfad gefunden (embedding_export_runtime.output_path oder database.path).")
+    db_path = cfg.get("database", {}).get("sqlite_path") or "tcg_database/database/karten.db"
     return Path(db_path)
 
 
-def load_embeddings_from_json(path: Path) -> Tuple[List[str], np.ndarray]:
+def load_embeddings_from_sqlite(path: Path, mode: str, emb_dim: int) -> Tuple[List[str], np.ndarray]:
     if not path.exists():
         raise FileNotFoundError(f"Embedding-DB nicht gefunden: {path}")
-    with path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    # Erwartetes Format: payload mit "cards" (Meta) und "embeddings" (Liste von Listen)
-    cards = data.get("cards") or []
-    vectors_raw = data.get("embeddings") or []
-    if not cards or not vectors_raw:
-        raise ValueError("Keine Karten oder Embeddings im JSON gefunden.")
-    if len(cards) != len(vectors_raw):
-        raise ValueError(f"cards ({len(cards)}) und embeddings ({len(vectors_raw)}) sind unterschiedlich lang.")
-
+    X, labels, metas = load_flat_samples(str(path), mode, emb_dim)
     names: List[str] = []
-    vectors: List[np.ndarray] = []
-    for card, emb in zip(cards, vectors_raw):
-        names.append(card.get("name") or card.get("card_name") or card.get("card_uuid") or "unknown")
-        vectors.append(np.asarray(emb, dtype=np.float32))
-
-    X = np.stack(vectors, axis=0)
-    norms = np.linalg.norm(X, axis=1, keepdims=True)
-    X = X / np.clip(norms, 1e-12, None)
+    for label, meta in zip(labels, metas):
+        names.append((meta or {}).get("name") or label)
+    if X.size > 0:
+        norms = np.linalg.norm(X, axis=1, keepdims=True)
+        X = X / np.clip(norms, 1e-12, None)
     return names, X
 
 
@@ -105,9 +90,12 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config) if args.config else {}
     db_path = _resolve_database_path(cfg, args.database)
+    emb_dim = int(cfg.get("encoder", {}).get("emb_dim") or cfg.get("model", {}).get("embed_dim", 1024))
 
-    names, X = load_embeddings_from_json(db_path)
+    names, X = load_embeddings_from_sqlite(db_path, args.mode, emb_dim)
     print(f"[INFO] Loaded {len(names)} embeddings from {db_path} (dim={X.shape[1] if X.ndim == 2 else 'unknown'})")
+    if X.size == 0:
+        raise SystemExit("Keine Embeddings geladen.")
 
     if X.shape[0] > args.max_cards > 0:
         rng = np.random.default_rng(42)

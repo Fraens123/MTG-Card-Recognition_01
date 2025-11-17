@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -15,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.core.config_utils import load_config
+from src.core.sqlite_store import load_embeddings_with_meta
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
         dest="database",
         type=str,
         default=None,
-        help="Direct path to the embeddings JSON database (overrides config).",
+        help="Direct path to the SQLite embeddings DB (overrides config).",
     )
     parser.add_argument(
         "--diff-samples",
@@ -86,7 +86,6 @@ def load_embeddings_and_config(
     Laedt Embeddings + optional Config. Gibt den Pfad zur DB, Config-Dict,
     Kartenliste, Embedding-Array und optional den Recognition-Threshold zurueck.
     """
-    # Play-Button fallback: wenn keine Argumente, versuche config.yaml
     if not config_path and not explicit_db:
         default_cfg = Path("config.yaml")
         if default_cfg.exists():
@@ -96,34 +95,41 @@ def load_embeddings_and_config(
 
     cfg: Dict = {}
     threshold: float | None = None
+    emb_dim: int = 1024
     if config_path:
         cfg_path = Path(config_path)
         if not cfg_path.exists():
             raise FileNotFoundError(f"Config nicht gefunden: {cfg_path}")
         cfg = load_config(config_path)
         threshold = cfg.get("recognition", {}).get("threshold")
-
-    export_key = "embedding_export_analysis" if mode == "analysis" else "embedding_export_runtime"
-    export_cfg = cfg.get(export_key, {})
+        emb_dim = int(cfg.get("encoder", {}).get("emb_dim") or cfg.get("model", {}).get("embed_dim", emb_dim))
 
     if explicit_db:
         db_path = Path(explicit_db)
     else:
-        if not export_cfg:
-            raise KeyError(f"Config-Block '{export_key}' fehlt oder ist leer.")
-        default_db = export_cfg.get("output_path")
-        if not default_db:
-            raise ValueError(f"output_path fehlt im Config-Block '{export_key}'.")
-        db_path = Path(default_db)
+        db_default = cfg.get("database", {}).get("sqlite_path") or "tcg_database/database/karten.db"
+        db_path = Path(db_default)
 
     if not db_path.exists():
-        raise FileNotFoundError(f"Database JSON not found: {db_path}")
+        raise FileNotFoundError(f"Database nicht gefunden: {db_path}")
 
-    with open(db_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    embeddings_by_card, meta_by_card = load_embeddings_with_meta(str(db_path), mode, emb_dim)
+    cards: List[Dict] = []
+    vectors: List[np.ndarray] = []
+    for cid, vecs in embeddings_by_card.items():
+        meta = meta_by_card.get(cid, {})
+        base = {
+            "card_uuid": cid,
+            "name": meta.get("name") or cid,
+            "set_code": meta.get("set") or "",
+            "collector_number": meta.get("collector_number") or "",
+            "image_path": (meta.get("image_paths") or [None])[0] or "",
+        }
+        for vec in vecs:
+            cards.append(base.copy())
+            vectors.append(vec)
 
-    cards: List[Dict] = data.get("cards", [])
-    embeddings = np.asarray(data.get("embeddings", []), dtype=np.float32)
+    embeddings = np.stack(vectors, axis=0) if vectors else np.zeros((0, emb_dim), dtype=np.float32)
     if embeddings.ndim != 2:
         raise ValueError("Embeddings array must be 2D [N, D].")
     if len(cards) != len(embeddings):
@@ -404,6 +410,8 @@ def main():
 
     db_path, cfg, cards, embeddings, cfg_threshold = load_embeddings_and_config(args.config, args.database, args.mode)
     print(f"[LOAD] Embedding-DB ({args.mode}): {db_path}")
+    if embeddings.size == 0:
+        raise SystemExit("Keine Embeddings gefunden.")
     # L2-Normalisierung absichern (Embeddings sollten schon normiert sein)
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     embeddings = embeddings / np.clip(norms, 1e-12, None)

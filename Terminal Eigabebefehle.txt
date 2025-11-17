@@ -30,16 +30,18 @@ python tools/launch_tensorboard.py --logdir debug/logs/fine
 
 export_embeddings_for_tensorboard:
 
-Analyse Datenbank: 
+Analyse Datenbank (SQLite):
 python tools/visualization/export_embeddings_for_tensorboard.py `
-  --cards-json "embeddings/card_embeddings_analysis.json" `
+  --database "tcg_database/database/karten.db" `
+  --mode analysis `
   --output-dir "debug/tensorboard_analysis" `
   --launch-tensorboard --tensorboard-port 6006
 
 
-Runtime-Datenbank:
+Runtime-Datenbank (SQLite):
 python tools/visualization/export_embeddings_for_tensorboard.py `
-  --cards-json "embeddings/card_embeddings.json" `
+  --database "tcg_database/database/karten.db" `
+  --mode runtime `
   --output-dir "debug/tensorboard_runtime" `
   --launch-tensorboard --tensorboard-port 6006
 

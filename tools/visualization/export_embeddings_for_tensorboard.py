@@ -1,5 +1,4 @@
 import argparse
-import json
 import subprocess
 import sys
 import webbrowser
@@ -14,6 +13,8 @@ from PIL import Image
 sys.path.insert(0, ".")
 from src.core.model_builder import load_encoder  # noqa: E402
 from src.core.embedding_utils import build_card_embedding  # noqa: E402
+from src.core.sqlite_store import load_flat_samples  # noqa: E402
+from src.datasets.card_datasets import parse_scryfall_filename  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -36,9 +37,11 @@ def parse_args() -> argparse.Namespace:
         help="Pfad zur config.yaml (Standard: %(default)s)",
     )
     parser.add_argument(
+        "--database",
         "--cards-json",
+        dest="database",
         type=str,
-        help="Pfad zu cards.json. Falls nicht angegeben, wird der Pfad aus der Config genutzt.",
+        help="Pfad zur SQLite-Datenbank. Falls nicht angegeben, wird der Pfad aus der Config genutzt.",
     )
     parser.add_argument(
         "--model",
@@ -56,6 +59,12 @@ def parse_args() -> argparse.Namespace:
         choices=SOURCE_CHOICES,
         default="db",
         help="Welche Embeddings exportiert werden sollen: Datenbank (Standard) oder erneut aus Bildern berechnen.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["runtime", "analysis"],
+        default="runtime",
+        help="Embedding-Mode fuer die DB-Quelle (nur source=db).",
     )
     parser.add_argument(
         "--limit",
@@ -102,34 +111,6 @@ def resolve_path(path_str: str | Path, base_dir: Path) -> Path:
     return path if path.is_absolute() else (base_dir / path).resolve()
 
 
-def load_cards(cards_json: Path) -> List[dict]:
-    with cards_json.open("r", encoding="utf-8") as fh:
-        payload = json.load(fh)
-    if isinstance(payload, dict) and "cards" in payload:
-        return payload["cards"]
-    if isinstance(payload, list):
-        return payload
-    raise ValueError(f"Unerwartetes Format in {cards_json}")
-
-
-def load_cards_with_embeddings(cards_json: Path) -> Tuple[List[dict], List[List[float]]]:
-    with cards_json.open("r", encoding="utf-8") as fh:
-        payload = json.load(fh)
-    if not isinstance(payload, dict) or "cards" not in payload or "embeddings" not in payload:
-        raise ValueError(
-            f"{cards_json} enthält keine 'cards' + 'embeddings'. "
-            "Bitte export_embeddings.py ausführen oder --source images nutzen."
-        )
-    cards = payload["cards"]
-    embeddings = payload["embeddings"]
-    if len(cards) != len(embeddings):
-        raise ValueError(
-            f"Anzahl Karten ({len(cards)}) passt nicht zu Embeddings ({len(embeddings)}). "
-            "Bitte export_embeddings.py neu ausführen."
-        )
-    return cards, embeddings
-
-
 def build_transform(target_size: Sequence[int]) -> T.Compose:
     return T.Compose(
         [
@@ -165,6 +146,47 @@ def resolve_image_path(card: dict, repo_root: Path, images_root: Path) -> Path |
         return candidate
     fallback = (images_root / Path(raw_path).name).resolve()
     return fallback if fallback.exists() else None
+
+
+def build_cards_from_samples(labels: Sequence[str], metas: Sequence[dict | None]) -> List[dict]:
+    cards: List[dict] = []
+    for label, meta in zip(labels, metas):
+        meta = meta or {}
+        cards.append(
+            {
+                "card_uuid": meta.get("scryfall_id") or label,
+                "name": meta.get("name") or label,
+                "set_code": meta.get("set") or meta.get("set_code") or "",
+                "collector_number": meta.get("collector_number") or "",
+                "image_path": (meta.get("image_paths") or [None])[0],
+            }
+        )
+    return cards
+
+
+def list_image_cards(images_dir: Path) -> List[dict]:
+    cards: List[dict] = []
+    for path in sorted(images_dir.iterdir()):
+        if not path.is_file() or path.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
+            continue
+        meta = parse_scryfall_filename(path.name)
+        if meta:
+            card_uuid, set_code, collector_number, card_name = meta
+        else:
+            card_uuid = path.stem
+            set_code = ""
+            collector_number = ""
+            card_name = path.stem
+        cards.append(
+            {
+                "card_uuid": card_uuid,
+                "name": card_name.replace("_", " "),
+                "set_code": set_code,
+                "collector_number": collector_number,
+                "image_path": str(path),
+            }
+        )
+    return cards
 
 
 def ensure_projector_config(output_dir: Path) -> None:
@@ -301,17 +323,22 @@ def main():
         args.tensorboard_port = getattr(args, "tensorboard_port", 6006)
 
     config = load_config(resolve_path(args.config, REPO_ROOT))
-    cards_json = resolve_path(args.cards_json or config["database"]["path"], REPO_ROOT)
+    sqlite_cfg = config.get("database", {}).get("sqlite_path") or "tcg_database/database/karten.db"
+    sqlite_path = resolve_path(args.database or sqlite_cfg, REPO_ROOT)
+    emb_dim = int(config.get("encoder", {}).get("emb_dim") or config.get("model", {}).get("embed_dim", 1024))
 
     output_dir = resolve_path(args.output_dir, REPO_ROOT)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.source == "db":
-        cards, db_embeddings = load_cards_with_embeddings(cards_json)
-        print(f"[INFO] Lade {len(cards)} Datenbank-Eintr\u00e4ge aus {cards_json}")
+        if not sqlite_path.exists():
+            raise FileNotFoundError(f"SQLite-DB nicht gefunden: {sqlite_path}")
+        X, labels, metas = load_flat_samples(str(sqlite_path), args.mode, emb_dim)
+        cards = build_cards_from_samples(labels, metas)
+        print(f"[INFO] Lade {len(cards)} Datenbank-Eintraege aus {sqlite_path} (mode={args.mode})")
         processed, skipped = export_db_embeddings(
             cards=cards,
-            embeddings=db_embeddings,
+            embeddings=X,
             output_dir=output_dir,
             limit=args.limit,
         )
@@ -320,6 +347,8 @@ def main():
         default_model_path = Path(paths_cfg.get("models_dir", "./models")) / "encoder_fine.pt"
         model_path = resolve_path(args.model or default_model_path, REPO_ROOT)
         images_dir = resolve_path(paths_cfg.get("scryfall_dir", "./data/scryfall_images"), REPO_ROOT)
+        if not images_dir.exists():
+            raise FileNotFoundError(f"Scryfall-Verzeichnis nicht gefunden: {images_dir}")
 
         images_cfg = config.get("images", {})
         full_size = images_cfg.get("full_card_size", [224, 320])
@@ -333,8 +362,8 @@ def main():
         print(f"[INFO] Lade Modell {model_path} auf {device}")
         model = load_encoder(str(model_path), cfg=config, device=device)
 
-        cards = load_cards(cards_json)
-        print(f"[INFO] Karten im JSON: {len(cards)}")
+        cards = list_image_cards(images_dir)
+        print(f"[INFO] Karten im Bilder-Verzeichnis: {len(cards)}")
         transform = build_transform(resize_hw)
 
         processed, skipped = export_embeddings(

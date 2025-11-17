@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -23,6 +22,7 @@ from src.core.config_utils import load_config
 from src.core.embedding_utils import build_card_embedding_batch, compute_centroid, l2_normalize
 from src.core.image_ops import crop_card_art, get_full_art_crop_cfg
 from src.core.model_builder import load_encoder
+from src.core.sqlite_store import SqliteEmbeddingStore
 from src.datasets.card_datasets import parse_scryfall_filename
 
 DEFAULT_MEAN = [0.485, 0.456, 0.406]
@@ -130,26 +130,22 @@ def _prepare_card_tensors(
 
 
 def _process_batch(
-    pending: List[Tuple[torch.Tensor, str]],
+    pending: List[Tuple[torch.Tensor, str, str]],
     model: torch.nn.Module,
     device: torch.device,
-) -> List[Tuple[np.ndarray, str]]:
+) -> List[Tuple[np.ndarray, str, str]]:
     if not pending:
         return []
-    batch_tensors, batch_ids = zip(*pending)
+    batch_tensors, batch_ids, batch_paths = zip(*pending)
     full_batch = torch.stack(batch_tensors)
     if device.type == "cuda":
         full_batch = full_batch.pin_memory()
     full_batch = full_batch.to(device, non_blocking=True)
     emb_batch = build_card_embedding_batch(model, full_batch).cpu().numpy()
-    return [(l2_normalize(vec), card_id) for vec, card_id in zip(emb_batch, batch_ids)]
+    return [(l2_normalize(vec), cid, path) for vec, cid, path in zip(emb_batch, batch_ids, batch_paths)]
 
 
 def _expected_vectors_per_card(cfg: Dict, base_count: int) -> int:
-    """
-    Liefert erwartete Vektoren pro Karte basierend auf den Flags.
-    base_count: Original + Augmentierungen (ohne Zentroiden-Logik).
-    """
     expected = 0
     if cfg.get("append_individual", False):
         expected += base_count
@@ -160,6 +156,22 @@ def _expected_vectors_per_card(cfg: Dict, base_count: int) -> int:
     if expected == 0:
         expected = base_count
     return expected
+
+
+def _ensure_relative_path(path: str) -> str:
+    try:
+        return Path(path).resolve().relative_to(PROJECT_ROOT).as_posix()
+    except Exception:
+        return Path(path).as_posix()
+
+
+def _infer_language_from_filename(filename: str) -> Optional[str]:
+    parts = Path(filename).stem.split("_")
+    if len(parts) >= 4:
+        lang = parts[-2]
+        if len(lang) == 2:
+            return lang.lower()
+    return None
 
 
 def main() -> None:
@@ -188,29 +200,23 @@ def main() -> None:
     export_batch_size = int(export_cfg.get("export_batch_size", 64))
     num_workers = int(export_cfg.get("num_workers", 4))
     camera_aug_cfg = cfg.get("camera_augmentor", {})
-    camera_augmentor: CameraLikeAugmentor | None = None
-    if use_augmentations and num_augmentations > 0 and camera_aug_cfg.get("enabled", True):
-        camera_augmentor = CameraLikeAugmentor(**camera_aug_cfg)
 
-    cards: List[Dict[str, str]] = []
-    embeddings: List[List[float]] = []
     files = list(_iterate_images(scryfall_dir))
     print(f"[INFO] Gefundene Kartenbilder: {len(files)}")
-    card_to_vectors: Dict[str, List[np.ndarray]] = {}
+    card_vectors: Dict[str, List[Tuple[np.ndarray, str]]] = {}
     card_meta: Dict[str, Dict[str, str]] = {}
-    pending: List[Tuple[torch.Tensor, str]] = []
+    pending: List[Tuple[torch.Tensor, str, str]] = []
 
     def _flush_pending():
         nonlocal pending
         if not pending:
             return
         batch_results = _process_batch(pending, model, device)
-        for vec, cid in batch_results:
-            card_to_vectors.setdefault(cid, []).append(vec)
+        for vec, cid, img_path in batch_results:
+            card_vectors.setdefault(cid, []).append((vec, img_path))
         pending = []
 
     print(f"[INFO] Nutze export_batch_size={export_batch_size} | num_workers={num_workers}")
-    # Paralleles Laden/Augmentieren
     with ThreadPoolExecutor(max_workers=max(1, num_workers)) as executor:
         futures = []
         for name, path in files:
@@ -232,45 +238,61 @@ def main() -> None:
             cid = card_dict["card_uuid"]
             card_meta[cid] = card_dict
             for t in tensors:
-                pending.append((t, cid))
+                pending.append((t, cid, card_dict["image_path"]))
                 if len(pending) >= export_batch_size:
                     _flush_pending()
 
         _flush_pending()
 
-    # Zentroiden + Speicherlogik anwenden
     card_order = [card_meta[cid]["card_uuid"] for cid in card_meta.keys()]
     total_cards = len(card_order)
     base_count = 1 + (num_augmentations if use_augmentations and num_augmentations > 0 else 0)
     expected_per_card = _expected_vectors_per_card(export_cfg, base_count)
 
+    sqlite_path = cfg.get("database", {}).get("sqlite_path", "tcg_database/database/karten.db")
+    emb_dim = int(cfg.get("encoder", {}).get("emb_dim", cfg.get("model", {}).get("embed_dim", 1024)))
+    store = SqliteEmbeddingStore(sqlite_path, emb_dim=emb_dim)
+    store.clear_embeddings(args.mode)
+    image_cache: Dict[Tuple[str, str], int] = {}
+    print(f"[STORE] Schreibe Embeddings nach {sqlite_path} (mode={args.mode})")
+
+    num_embeddings = 0
     for cid in card_order:
-        vectors = card_to_vectors.get(cid, [])
+        vectors = card_vectors.get(cid, [])
         if not vectors:
             continue
-        centroid = compute_centroid(vectors)
+        centroid = compute_centroid([v for v, _ in vectors])
 
-        final_vectors: List[np.ndarray] = []
+        final_records: List[Tuple[np.ndarray, Optional[str], int]] = []
         if export_cfg.get("append_individual", False):
-            final_vectors.extend(vectors)
+            final_records.extend([(vec, path, idx) for idx, (vec, path) in enumerate(vectors)])
         if export_cfg.get("append_centroid", False):
-            final_vectors.append(centroid)
+            final_records.append((centroid, None, 999))
         if export_cfg.get("use_centroid", False):
-            final_vectors = [centroid]
-        if not final_vectors:
-            final_vectors = vectors
+            final_records = [(centroid, None, 999)]
+        if not final_records:
+            final_records = [(vec, path, idx) for idx, (vec, path) in enumerate(vectors)]
 
-        card_dict = card_meta[cid]
-        for vec in final_vectors:
-            cards.append(card_dict)
-            embeddings.append(vec.tolist())
+        for vec, path, aug_idx in final_records:
+            image_id = None
+            if path:
+                rel_path = _ensure_relative_path(path)
+                cache_key = (cid, rel_path)
+                image_id = image_cache.get(cache_key)
+                if image_id is None:
+                    lang = _infer_language_from_filename(path)
+                    image_id = store.get_or_create_image(
+                        scryfall_id=cid,
+                        file_path=rel_path,
+                        source="scryfall",
+                        language=lang,
+                        is_training=True,
+                    )
+                    image_cache[cache_key] = image_id
+            store.add_embedding(scryfall_id=cid, vec=vec, mode=args.mode, aug_index=aug_idx, image_id=image_id)
+            num_embeddings += 1
 
-    out_path = Path(export_cfg.get("output_path", os.path.join(cfg.get("paths", {}).get("embeddings_dir", "./embeddings"), "card_embeddings.json")))
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    num_cards = len(files)
-    num_embeddings = len(embeddings)
-
-    storage_desc = "unverändert"
+    storage_desc = "unveraendert"
     if export_cfg.get("use_centroid", False):
         storage_desc = "nur Zentroid"
     elif export_cfg.get("append_individual", False) and export_cfg.get("append_centroid", False):
@@ -278,35 +300,14 @@ def main() -> None:
     elif export_cfg.get("append_individual", False):
         storage_desc = "nur Einzel-Embeddings"
     elif export_cfg.get("append_centroid", False):
-        storage_desc = "nur Zentroid angehängt"
+        storage_desc = "nur Zentroid angehaengt"
 
-    payload = {
-        "cards": cards,
-        "embeddings": embeddings,
-        "meta": {
-            "mode": args.mode,
-            "config_section": export_key,
-            "model_path": str(model_path),
-            "scryfall_dir": scryfall_dir,
-            "num_cards": num_cards,
-            "num_embeddings": num_embeddings,
-            "use_augmentations": use_augmentations,
-            "num_augmentations": num_augmentations,
-            "export_batch_size": export_batch_size,
-            "num_workers": num_workers,
-            "storage": storage_desc,
-        },
-    }
-    with open(out_path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=False)
-    print(f"[INFO] Embeddings exportiert nach {out_path}")
-    print(f"[SUMMARY] Modus: {args.mode} | Karten/Cluster: {num_cards} | Embeddings geschrieben: {num_embeddings}")
+    print(f"[SUMMARY] Modus: {args.mode} | Karten/Cluster: {total_cards} | Embeddings geschrieben: {num_embeddings}")
     print(f"[SUMMARY] Erwartet pro Karte: {expected_per_card} | Gesamt erwartet: {expected_per_card * total_cards}")
     print(f"[SUMMARY] Augmentierungen: {'aktiv' if use_augmentations and num_augmentations > 0 else 'aus'} (n={num_augmentations})")
     print(f"[SUMMARY] Speicherlogik: {storage_desc}")
-    print("[NEXT] Erkennung testen: python -m src.recognize_cards --config config.yaml")
+    print(f"[NEXT] Erkennung testen: python -m src.recognize_cards --config {args.config}")
 
 
 if __name__ == "__main__":
     main()
-
