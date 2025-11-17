@@ -65,7 +65,8 @@ recognition:
   threshold: 0.55
 
 database:
-  path: ./embeddings/card_embeddings.json
+  path: ./embeddings/card_embeddings.json # Runtime Datenbank
+  #path: ./embeddings/card_embeddings_analysis.json # Analyse Datenbank  
 
 vector:
   dimension: 1024

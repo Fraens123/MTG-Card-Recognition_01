@@ -7,7 +7,6 @@ python -m src.training.export_embeddings --config config.yaml --mode runtime
 Analyse-Export (alle Augs + Zentroid):
 python -m src.training.export_embeddings --config config.yaml --mode analysis
 
-
 ----------------------------------------------------------------------------------------
 Analyse Tools:
 
@@ -16,5 +15,32 @@ python -m tools.analyze_embeddings --config config.yaml --mode analysis
 
 TSNE_Analyse:
 python -m tools.tsne_embeddings --config config.yaml --max-cards 500 --perplexity 30 --save debug/tsne_3d.png
+
+----------------------------------------------------------------------------------------
+
+Trainingsdaten Tensorboard anzeigen:
+
+Coarse Datenbank:
+python tools/launch_tensorboard.py --logdir debug/logs/coarse
+
+Fine Datenbank:
+python tools/launch_tensorboard.py --logdir debug/logs/fine
+
+----------------------------------------------------------------------------------------
+
+export_embeddings_for_tensorboard:
+
+Analyse Datenbank: 
+python tools/visualization/export_embeddings_for_tensorboard.py `
+  --cards-json "embeddings/card_embeddings_analysis.json" `
+  --output-dir "debug/tensorboard_analysis" `
+  --launch-tensorboard --tensorboard-port 6006
+
+
+Runtime-Datenbank:
+python tools/visualization/export_embeddings_for_tensorboard.py `
+  --cards-json "embeddings/card_embeddings.json" `
+  --output-dir "debug/tensorboard_runtime" `
+  --launch-tensorboard --tensorboard-port 6006
 
 ----------------------------------------------------------------------------------------
