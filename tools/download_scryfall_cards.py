@@ -23,7 +23,7 @@ from src.core.sqlite_store import SqliteEmbeddingStore
 
 
 SCRYFALL_API_BASE = "https://api.scryfall.com"
-ALLOWED_LANGS = {"en", "de"}
+ALLOWED_LANGS = {"en"}
 
 
 def _read_csv(csv_path: Path) -> Tuple[list[dict], Dict[str, str]]:
@@ -134,7 +134,7 @@ def build_filename(card: dict) -> str:
     set_code = (card.get("set") or "UNK").upper()
     collector = (card.get("collector_number") or "0").replace("/", "-")
     lang = card.get("lang") or "xx"
-    cid = card.get("id") or "unknown"
+    cid = card.get("oracle_id") or card.get("id") or "unknown"
     return f"{set_code}_{collector}_{lang}_{cid}.jpg"
 
 
@@ -212,8 +212,12 @@ def main() -> None:
         print(f"[INFO] Lade Prints für {display}")
         for card in iter_prints(session, prints_uri, args.delay):
             cid = card.get("id")
+            oracle_id = card.get("oracle_id") or base_card.get("oracle_id")
             lang = card.get("lang")
-            if not cid or cid in downloaded or lang not in ALLOWED_LANGS:
+            card_key = cid
+            if not card_key or lang not in ALLOWED_LANGS:
+                continue
+            if (card_key, lang) in downloaded:
                 continue
 
             img_url = get_image_uri(card)
@@ -238,6 +242,7 @@ def main() -> None:
             try:
                 store.get_or_create_image(
                     scryfall_id=cid,
+                    oracle_id=oracle_id or cid,
                     file_path=rel_path,
                     source="scryfall",
                     language=lang,
@@ -245,7 +250,7 @@ def main() -> None:
                 )
             except Exception as exc:
                 print(f"[WARN] Konnte card_image nicht speichern ({cid}): {exc}")
-            downloaded.add(cid)
+            downloaded.add((card_key, lang))
             time.sleep(args.delay)
 
     print(f"[OK] Fertig. {len(downloaded)} Bilder gespeichert in {out_dir}")

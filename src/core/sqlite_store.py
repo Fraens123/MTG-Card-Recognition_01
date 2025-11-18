@@ -25,12 +25,18 @@ CREATE TABLE IF NOT EXISTS karten (
     color_identity TEXT,
     rarity TEXT,
     image_uris TEXT,
-    legalities TEXT
+    legalities TEXT,
+    price_usd REAL,
+    price_usd_foil REAL,
+    price_eur REAL,
+    price_eur_foil REAL,
+    price_tix REAL
 );
 
 CREATE TABLE IF NOT EXISTS card_images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     scryfall_id TEXT NOT NULL,
+    oracle_id TEXT,
     file_path TEXT NOT NULL,
     source TEXT NOT NULL,
     language TEXT,
@@ -42,6 +48,7 @@ CREATE TABLE IF NOT EXISTS card_images (
 CREATE TABLE IF NOT EXISTS card_embeddings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     scryfall_id TEXT NOT NULL,
+    oracle_id TEXT,
     image_id INTEGER,
     mode TEXT NOT NULL,
     aug_index INTEGER NOT NULL,
@@ -73,6 +80,20 @@ def _json_loads(value: Optional[str]) -> Any:
         return None
 
 
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    cur = conn.execute(f"PRAGMA table_info({table})")
+    return any(row[1] == column for row in cur.fetchall())
+
+
+def _to_float(value: Any) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class SqliteEmbeddingStore:
     def __init__(self, db_path: str, emb_dim: int):
         self.db_path = Path(db_path)
@@ -88,9 +109,49 @@ class SqliteEmbeddingStore:
     def ensure_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(SCHEMA_SQL)
+            # Nachziehen neuer Spalten ohne bestehende Daten zu verlieren.
+            if not _column_exists(conn, "card_images", "oracle_id"):
+                conn.execute("ALTER TABLE card_images ADD COLUMN oracle_id TEXT")
+            if not _column_exists(conn, "card_embeddings", "oracle_id"):
+                conn.execute("ALTER TABLE card_embeddings ADD COLUMN oracle_id TEXT")
+            # Unique-Index auf oracle_id + file_path, damit reprints zusammenlaufen.
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_card_images_oracle_file "
+                "ON card_images(oracle_id, file_path)"
+            )
+            # Vorhandene Daten mit oracle_id aus karten befüllen.
+            conn.execute(
+                """
+                UPDATE card_images
+                SET oracle_id = (
+                    SELECT oracle_id FROM karten WHERE karten.id = card_images.scryfall_id
+                )
+                WHERE oracle_id IS NULL OR oracle_id = ''
+                """
+            )
+            conn.execute(
+                """
+                UPDATE card_embeddings
+                SET oracle_id = (
+                    SELECT oracle_id FROM karten WHERE karten.id = card_embeddings.scryfall_id
+                )
+                WHERE oracle_id IS NULL OR oracle_id = ''
+                """
+            )
+            # Preise nachziehen, falls Spalten fehlen.
+            for col in (
+                ("price_usd", "REAL"),
+                ("price_usd_foil", "REAL"),
+                ("price_eur", "REAL"),
+                ("price_eur_foil", "REAL"),
+                ("price_tix", "REAL"),
+            ):
+                if not _column_exists(conn, "karten", col[0]):
+                    conn.execute(f"ALTER TABLE karten ADD COLUMN {col[0]} {col[1]}")
             conn.commit()
 
     def upsert_card(self, card: Dict[str, Any]) -> None:
+        prices = card.get("prices") or {}
         payload = {
             "id": card.get("id"),
             "oracle_id": card.get("oracle_id"),
@@ -108,6 +169,11 @@ class SqliteEmbeddingStore:
             "rarity": card.get("rarity"),
             "image_uris": _json_dumps(card.get("image_uris")),
             "legalities": _json_dumps(card.get("legalities")),
+            "price_usd": _to_float(prices.get("usd")),
+            "price_usd_foil": _to_float(prices.get("usd_foil")),
+            "price_eur": _to_float(prices.get("eur")),
+            "price_eur_foil": _to_float(prices.get("eur_foil")),
+            "price_tix": _to_float(prices.get("tix")),
         }
         if not payload["id"]:
             raise ValueError("Card muss ein 'id' Feld besitzen (Scryfall ID).")
@@ -125,25 +191,29 @@ class SqliteEmbeddingStore:
 
     def get_or_create_image(
         self,
-        scryfall_id: str,
+        scryfall_id: Optional[str],
         file_path: str,
         source: str,
         language: Optional[str],
         is_training: bool,
+        oracle_id: Optional[str] = None,
     ) -> int:
-        if not scryfall_id:
-            raise ValueError("scryfall_id ist erforderlich.")
+        if not scryfall_id and not oracle_id:
+            raise ValueError("scryfall_id oder oracle_id ist erforderlich.")
+        # oracle_id dient als gemeinsamer Schluessel; falls keine Print-ID vorhanden ist,
+        # verwenden wir sie auch als scryfall_id, um die NOT NULL-Constraint zu erfuellen.
         payload = {
-            "scryfall_id": scryfall_id,
+            "scryfall_id": scryfall_id or oracle_id,
+            "oracle_id": oracle_id or scryfall_id,
             "file_path": file_path,
             "source": source,
             "language": language,
             "is_training": int(bool(is_training)),
         }
         sql = """
-        INSERT INTO card_images (scryfall_id, file_path, source, language, is_training)
-        VALUES (:scryfall_id, :file_path, :source, :language, :is_training)
-        ON CONFLICT(scryfall_id, file_path)
+        INSERT INTO card_images (scryfall_id, oracle_id, file_path, source, language, is_training)
+        VALUES (:scryfall_id, :oracle_id, :file_path, :source, :language, :is_training)
+        ON CONFLICT(oracle_id, file_path)
         DO UPDATE SET language=excluded.language, source=excluded.source, is_training=excluded.is_training
         """
         with self._connect() as conn:
@@ -153,8 +223,8 @@ class SqliteEmbeddingStore:
                 return int(cur.lastrowid)
             # Row existed, fetch id
             cur = conn.execute(
-                "SELECT id FROM card_images WHERE scryfall_id = ? AND file_path = ?",
-                (scryfall_id, file_path),
+                "SELECT id FROM card_images WHERE oracle_id = ? AND file_path = ?",
+                (payload["oracle_id"], file_path),
             )
             row = cur.fetchone()
             if not row:
@@ -168,25 +238,27 @@ class SqliteEmbeddingStore:
 
     def add_embedding(
         self,
-        scryfall_id: str,
+        scryfall_id: Optional[str],
         vec: np.ndarray,
         mode: str,
         aug_index: int,
         image_id: Optional[int] = None,
+        oracle_id: Optional[str] = None,
     ) -> int:
         arr = np.asarray(vec, dtype=np.float32).reshape(-1)
         if arr.size != self.emb_dim:
             raise ValueError(f"Erwartete Embedding-Dimension {self.emb_dim}, erhalten {arr.size}")
         payload = {
-            "scryfall_id": scryfall_id,
+            "scryfall_id": scryfall_id or oracle_id,
+            "oracle_id": oracle_id or scryfall_id,
             "image_id": image_id,
             "mode": mode,
             "aug_index": int(aug_index),
             "emb": arr.astype(np.float32, copy=False).tobytes(),
         }
         sql = """
-        INSERT INTO card_embeddings (scryfall_id, image_id, mode, aug_index, emb)
-        VALUES (:scryfall_id, :image_id, :mode, :aug_index, :emb)
+        INSERT INTO card_embeddings (scryfall_id, oracle_id, image_id, mode, aug_index, emb)
+        VALUES (:scryfall_id, :oracle_id, :image_id, :mode, :aug_index, :emb)
         """
         with self._connect() as conn:
             cur = conn.execute(sql, payload)
@@ -201,6 +273,7 @@ def _decode_meta_row(row: sqlite3.Row) -> Dict[str, Any]:
     legalities = _json_loads(row["legalities"]) or {}
     return {
         "scryfall_id": row["id"],
+        "oracle_id": row["oracle_id"] or row["id"],
         "name": row["name"],
         "set": row["set"],
         "set_name": row["set_name"],
@@ -215,6 +288,11 @@ def _decode_meta_row(row: sqlite3.Row) -> Dict[str, Any]:
         "oracle_text": row["oracle_text"],
         "image_uris": image_uris,
         "legalities": legalities,
+        "price_usd": row["price_usd"],
+        "price_usd_foil": row["price_usd_foil"],
+        "price_eur": row["price_eur"],
+        "price_eur_foil": row["price_eur_foil"],
+        "price_tix": row["price_tix"],
     }
 
 
@@ -231,11 +309,14 @@ def load_embeddings_with_meta(
     query = """
     SELECT
         ce.scryfall_id,
+        ce.oracle_id AS emb_oracle_id,
         ce.emb,
         ce.aug_index,
         ci.file_path AS image_path,
         ci.language AS image_language,
-        k.*
+        ci.oracle_id AS img_oracle_id,
+        k.*,
+        k.oracle_id AS card_oracle_id
     FROM card_embeddings AS ce
     LEFT JOIN card_images AS ci ON ce.image_id = ci.id
     LEFT JOIN karten AS k ON ce.scryfall_id = k.id
@@ -246,7 +327,8 @@ def load_embeddings_with_meta(
     meta_by_card: Dict[str, Dict[str, Any]] = {}
     with conn:
         for row in conn.execute(query, (mode,)):
-            cid = row["scryfall_id"]
+            oracle_id = row["emb_oracle_id"] or row["img_oracle_id"] or row["card_oracle_id"]
+            cid = oracle_id or row["scryfall_id"]
             if cid is None:
                 continue
             vec = np.frombuffer(row["emb"], dtype=np.float32)
@@ -254,7 +336,12 @@ def load_embeddings_with_meta(
                 raise ValueError(f"Falsche Embedding-Dimension fuer {cid}: {vec.size} != {emb_dim}")
             embeddings_by_card.setdefault(cid, []).append(vec)
             if cid not in meta_by_card:
-                meta = _decode_meta_row(row) if row["id"] else {"scryfall_id": cid}
+                if row["id"]:
+                    meta = _decode_meta_row(row)
+                    if oracle_id:
+                        meta["oracle_id"] = oracle_id
+                else:
+                    meta = {"scryfall_id": cid, "oracle_id": cid}
                 meta.setdefault("image_paths", [])
                 meta_by_card[cid] = meta
             meta = meta_by_card[cid]
@@ -264,12 +351,17 @@ def load_embeddings_with_meta(
                 paths.append(img_path)
             if not meta.get("lang") and row["image_language"]:
                 meta["lang"] = row["image_language"]
-        # Fallback: falls kein Bildpfad vorhanden (z. B. nur Zentroiden), hole erstmals verfügbares card_image
+        # Fallback: falls kein Bildpfad vorhanden (z. B. nur Zentroiden), hole erstmals verfuegbares card_image
         missing_paths = [cid for cid, meta in meta_by_card.items() if not meta.get("image_paths")]
         if missing_paths:
             placeholder = ",".join("?" for _ in missing_paths)
-            img_query = f"SELECT scryfall_id, file_path, language FROM card_images WHERE scryfall_id IN ({placeholder})"
-            for img_row in conn.execute(img_query, missing_paths):
+            img_query = (
+                f"SELECT COALESCE(oracle_id, scryfall_id) AS card_id, file_path, language "
+                f"FROM card_images WHERE (oracle_id IN ({placeholder}) OR scryfall_id IN ({placeholder}))"
+            )
+            img_query = "".join(img_query)
+            params = tuple(missing_paths) + tuple(missing_paths)
+            for img_row in conn.execute(img_query, params):
                 cid = img_row[0]
                 meta = meta_by_card.get(cid)
                 if meta is None:

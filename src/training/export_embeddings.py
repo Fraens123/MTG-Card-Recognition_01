@@ -283,13 +283,16 @@ def main() -> None:
                     lang = _infer_language_from_filename(path)
                     image_id = store.get_or_create_image(
                         scryfall_id=cid,
+                        oracle_id=cid,
                         file_path=rel_path,
                         source="scryfall",
                         language=lang,
                         is_training=True,
                     )
                     image_cache[cache_key] = image_id
-            store.add_embedding(scryfall_id=cid, vec=vec, mode=args.mode, aug_index=aug_idx, image_id=image_id)
+            store.add_embedding(
+                scryfall_id=cid, oracle_id=cid, vec=vec, mode=args.mode, aug_index=aug_idx, image_id=image_id
+            )
             num_embeddings += 1
 
     storage_desc = "unveraendert"
