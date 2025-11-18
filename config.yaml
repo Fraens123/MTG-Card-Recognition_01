@@ -120,3 +120,8 @@ embedding_export_analysis:
   append_centroid: true
   export_batch_size: 64
   num_workers: 4
+
+analysis:
+  thresholds:
+    spread_max: 0.90   # Flag, wenn intra_max_dist > spread_max
+    overlap: 0.60      # Flag, wenn nearest_neighbor_dist < overlap
