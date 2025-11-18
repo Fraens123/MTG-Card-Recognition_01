@@ -124,9 +124,10 @@ def get_image_uri(card: dict) -> Optional[str]:
         img_uris = face.get("image_uris", {})
     else:
         return None
-    for key in ("border_crop", "large", "normal"):
-        if key in img_uris:
-            return img_uris[key]
+    # Bevorzuge Varianten mit Rahmen: large -> normal -> border_crop
+    for key in ("large", "normal", "border_crop"):
+        if key in img_uris and img_uris.get(key):
+            return img_uris.get(key)
     return None
 
 

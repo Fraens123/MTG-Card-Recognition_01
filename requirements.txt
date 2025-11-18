@@ -25,3 +25,6 @@ matplotlib>=3.8.0
 
 # Development Tools
 pytest>=7.4.0
+
+# Large JSON streaming
+ijson>=3.3

@@ -68,3 +68,35 @@ Das Skript lädt `models/encoder_fine.pt` und `database.path` aus der Config, sc
 - `training.coarse` / `training.fine`: Batchgrößen, Learning-Rate, Epochen, Augmentierung
 
 Alle Skripte lesen ausschließlich aus dieser Datei – Änderungen werden automatisch übernommen, ohne den Code anzufassen. Stelle nach jedem Trainingslauf sicher, dass das `models/`-Verzeichnis beschreibbar ist und genügend Speicherplatz für die Checkpoints vorhanden ist.
+
+## Analyse & Visualisierung
+Zur Qualitätsanalyse der Embeddings (Oracle-IDs) sowie zur visuellen Inspektion gibt es ein einheitliches Tool: `tools/visualization/oracle_cluster_viz.py`.
+
+Standardverhalten:
+- Es werden standardmäßig nur „Verdachtsfälle“ angezeigt (geflaggte Cluster/Points mit `overlap`, `spread` oder `metadata` gemäß Tabelle `oracle_quality`).
+- Um alle Einträge zu sehen, verwende `--cluster-show-all` bzw. `--scatter-show-all`.
+
+Beispiele (PowerShell):
+```powershell
+# Standard (nur Verdachtsfälle) – beide Ansichten: Cluster-Report + 2D-Scatter (PCA)
+python -m tools.visualization.oracle_cluster_viz --config config.yaml --mode analysis --view both --scatter-method pca
+
+# Standard (nur Verdachtsfälle) – nur Cluster-Report (HTML)
+python -m tools.visualization.oracle_cluster_viz --config config.yaml --mode analysis --view cluster
+
+# Standard (nur Verdachtsfälle) – nur Scatter (t-SNE)
+python -m tools.visualization.oracle_cluster_viz --config config.yaml --mode analysis --view scatter --scatter-method tsne --perplexity 30
+
+# ALLES anzeigen (beide Ansichten):
+python -m tools.visualization.oracle_cluster_viz --config config.yaml --mode analysis --view both --cluster-show-all --scatter-show-all
+
+# Nur Cluster vollständig anzeigen, Scatter weiter gefiltert lassen:
+python -m tools.visualization.oracle_cluster_viz --config config.yaml --mode analysis --view both --cluster-show-all
+
+# Nur Scatter vollständig anzeigen, Cluster weiter gefiltert lassen:
+python -m tools.visualization.oracle_cluster_viz --config config.yaml --mode analysis --view both --scatter-show-all
+```
+
+Ergebnisse werden standardmäßig unter `debug/` mit Zeitstempel gespeichert. Im Scatter können Punkte angeklickt werden, um direkt in den passenden Cluster-Abschnitt des Cluster-Reports zu springen.
+
+Hinweis: Die ehemaligen Skripte `render_oracle_clusters_html.py` und `scatter_oracle_clusters.py` wurden entfernt und im neuen, vereinheitlichten Skript `oracle_cluster_viz.py` zusammengeführt.

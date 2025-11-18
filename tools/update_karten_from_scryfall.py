@@ -3,13 +3,29 @@ import sqlite3
 import json
 import os
 import argparse
-import ijson
 import logging
 from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+try:
+    import ijson
+except Exception:
+    ijson = None
+
+from PIL import Image
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.core.sqlite_store import SqliteEmbeddingStore
 
 # Konfiguration
 KARTEN_DB = "tcg_database/database/karten.db"
 SCRYFALL_BULK_DATA_API = "https://api.scryfall.com/bulk-data"
+DEFAULT_OUT_DIR = "data/scryfall_images"
 
 def setup_logging(log_level=logging.INFO):
     """Konfiguriert das Logging-System mit detaillierter Ausgabe."""
@@ -35,8 +51,8 @@ def setup_logging(log_level=logging.INFO):
     logger.info(f"Logging initialisiert. Log-Datei: {log_file}")
     return logger
 
-def get_latest_default_cards_url():
-    """Ruft die aktuellste Default Cards URL von der Scryfall API ab."""
+def get_bulk_catalog() -> List[Dict]:
+    """Holt den Bulk-Katalog von Scryfall (Liste aller Bulk-Datensätze)."""
     logger = logging.getLogger(__name__)
     logger.info("Rufe aktuelle Bulk-Data-Informationen von Scryfall ab...")
     
@@ -44,22 +60,10 @@ def get_latest_default_cards_url():
         response = requests.get(SCRYFALL_BULK_DATA_API, timeout=30)
         response.raise_for_status()
         logger.info(f"Scryfall API erfolgreich kontaktiert. Status: {response.status_code}")
-        
-        bulk_data = response.json()
-        logger.debug(f"Bulk-Data Antwort enthält {len(bulk_data.get('data', []))} Einträge")
-        
-        # Suche nach dem "default_cards" Eintrag
-        for item in bulk_data["data"]:
-            if item["type"] == "default_cards":
-                url = item["download_uri"]
-                file_size = item.get("size", "unbekannt")
-                updated_at = item.get("updated_at", "unbekannt")
-                logger.info(f"Default Cards URL gefunden: {url}")
-                logger.info(f"Dateigröße: {file_size} Bytes, Letzte Aktualisierung: {updated_at}")
-                return url
-        
-        logger.error("Kein 'default_cards' Eintrag in der Scryfall Bulk-Data API gefunden!")
-        raise ValueError("Keine Default Cards URL in der Scryfall Bulk-Data API gefunden!")
+        payload = response.json()
+        items = payload.get("data", [])
+        logger.debug(f"Bulk-Data Antwort enthält {len(items)} Einträge")
+        return items
         
     except requests.RequestException as e:
         logger.error(f"Fehler beim Abrufen der Scryfall API: {e}")
@@ -68,7 +72,14 @@ def get_latest_default_cards_url():
         logger.error(f"Fehler beim Parsen der Scryfall API Antwort: {e}")
         raise
 
-def download_bulk_json(url: str, out_dir: str):
+
+def resolve_bulk_entry(catalog: List[Dict], bulk_type: str) -> Dict:
+    for item in catalog:
+        if item.get("type") == bulk_type:
+            return item
+    raise ValueError(f"Bulk-Typ '{bulk_type}' nicht im Scryfall-Katalog gefunden.")
+
+def download_bulk_json(url: str, out_dir: str) -> str:
     """
     Lädt die Bulk-JSON-Datei herunter, aber nur wenn sie neuer ist als die vorhandene.
     Verwendet den ursprünglichen Dateinamen von Scryfall (der bereits einen Zeitstempel enthält).
@@ -150,14 +161,14 @@ def download_bulk_json(url: str, out_dir: str):
         logger.error(f"Fehler beim Download: {e}")
         raise
 
-def load_cards_from_file(file_path: str):
+def load_cards_from_file(file_path: str) -> List[dict]:
     logger = logging.getLogger(__name__)
     logger.info(f"Lese Karten aus {file_path} (streamweise verarbeitung für große Dateien)...")
     
     file_size = os.path.getsize(file_path)
     logger.info(f"Dateigröße: {file_size / (1024*1024):.1f} MB")
     
-    if file_size > 50 * 1024 * 1024:  # Über 50MB - verwende ijson
+    if file_size > 50 * 1024 * 1024 and ijson is not None:  # Über 50MB - verwende ijson, falls vorhanden
         logger.info("Datei ist größer als 50MB - verwende streamweise Verarbeitung")
         return load_cards_streaming(file_path)
     else:
@@ -176,7 +187,7 @@ def load_cards_from_file(file_path: str):
             logger.info("Wechsle zu streamweiser Verarbeitung...")
             return load_cards_streaming(file_path)
 
-def load_cards_streaming(file_path: str):
+def load_cards_streaming(file_path: str) -> List[dict]:
     """Lädt Karten streamweise aus einer großen JSON-Datei mit ijson."""
     logger = logging.getLogger(__name__)
     logger.info("Verwende ijson für streamweise JSON-Verarbeitung...")
@@ -185,6 +196,8 @@ def load_cards_streaming(file_path: str):
     start_time = datetime.now()
     last_log_time = start_time
     
+    if ijson is None:
+        raise RuntimeError("ijson ist nicht installiert. Bitte 'pip install ijson' ausführen oder kleinere Datei verwenden.")
     try:
         with open(file_path, "rb") as f:
             # Parse das JSON-Array streamweise - jedes Element ist ein vollständiges Kartenobjekt
@@ -230,7 +243,7 @@ def load_cards_streaming(file_path: str):
         raise
 
 # BUG: Bei Karte Herbology Instructor werden keine image_uris geladen. Grund dafür ist im JSON gibt es zwei image_uris
-def upsert_cards(cards, db_path=None):
+def upsert_cards(cards: List[dict], db_path: Optional[str] = None):
     logger = logging.getLogger(__name__)
     
     if db_path is None:
@@ -243,32 +256,10 @@ def upsert_cards(cards, db_path=None):
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     
     try:
+        # Verwende den bestehenden Store (stellt Schema sicher, inkl. karten/card_images)
+        store = SqliteEmbeddingStore(db_path, emb_dim=1024)
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
-        
-        # Erstelle die Tabelle falls sie nicht existiert
-        logger.info("Erstelle/überprüfe Datenbanktabelle...")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS karten (
-                id TEXT PRIMARY KEY,
-                oracle_id TEXT,
-                name TEXT,
-                "set" TEXT,
-                set_name TEXT,
-                collector_number TEXT,
-                type_line TEXT,
-                oracle_text TEXT,
-                mana_cost TEXT,
-                cmc INTEGER,
-                colors TEXT,
-                color_identity TEXT,
-                rarity TEXT,
-                image_uris TEXT,
-                legalities TEXT
-            )
-        """)
-        
-        # Prüfe aktuelle Anzahl Einträge in DB
         cur.execute("SELECT COUNT(*) FROM karten")
         existing_count = cur.fetchone()[0]
         logger.info(f"Aktuelle Anzahl Karten in Datenbank: {existing_count}")
@@ -296,57 +287,12 @@ def upsert_cards(cards, db_path=None):
                     continue
                 
                 try:
-                    batch_data.append((
-                        card.get("id"),
-                        card.get("oracle_id"),
-                        card.get("name"),
-                        card.get("set"),
-                        card.get("set_name"),
-                        card.get("collector_number"),
-                        card.get("type_line") or "",
-                        card.get("oracle_text") or "",
-                        card.get("mana_cost") or "",
-                        int(card.get("cmc") or 0),  # Konvertiere zu int für SQLite
-                        ",".join(card.get("colors", [])),
-                        ",".join(card.get("color_identity", [])),
-                        card.get("rarity"),
-                        json.dumps(card.get("image_uris")) if card.get("image_uris") else "",
-                        json.dumps(card.get("legalities")) if card.get("legalities") else ""
-                    ))
+                    # Nutze Store, der Preise/JSON-Spalten sauber setzt (UPSERT)
+                    store.upsert_card(card)
+                    inserted += 1
                 except Exception as e:
-                    logger.warning(f"Fehler bei Karte {card.get('id', 'unbekannt')}: {e}")
+                    logger.warning(f"Fehler bei upsert_card für {card.get('id','unbekannt')}: {e}")
                     batch_errors += 1
-            
-            if batch_data:
-                try:
-                    # Führe Batch-Insert aus
-                    cur.executemany("""
-                        INSERT INTO karten (id, oracle_id, name, "set", set_name, collector_number, type_line, oracle_text, mana_cost, cmc, colors, color_identity, rarity, image_uris, legalities)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(id) DO UPDATE SET
-                            oracle_id=excluded.oracle_id,
-                            name=excluded.name,
-                            "set"=excluded."set",
-                            set_name=excluded.set_name,
-                            collector_number=excluded.collector_number,
-                            type_line=excluded.type_line,
-                            oracle_text=excluded.oracle_text,
-                            mana_cost=excluded.mana_cost,
-                            cmc=excluded.cmc,
-                            colors=excluded.colors,
-                            color_identity=excluded.color_identity,
-                            rarity=excluded.rarity,
-                            image_uris=excluded.image_uris,
-                            legalities=excluded.legalities
-                    """, batch_data)
-                    
-                    # Zähle Inserts vs Updates (vereinfacht)
-                    batch_inserted = len(batch_data)
-                    inserted += batch_inserted
-                    
-                except Exception as e:
-                    logger.error(f"Fehler beim Batch-Insert: {e}")
-                    batch_errors += len(batch_data)
             
             count += len(batch_data)
             errors += batch_errors
@@ -402,17 +348,73 @@ def analyze_json_structure(file_path: str):
     
     print("Struktur-Analyse beendet.")
 
+def get_image_uri(card: dict, version_order: Optional[List[str]] = None) -> Optional[str]:
+    order = ["large", "normal", "border_crop"] if not version_order else version_order
+    if "image_uris" in card and card.get("image_uris"):
+        img_uris = card["image_uris"]
+    elif "card_faces" in card and card.get("card_faces"):
+        face = card["card_faces"][0]
+        img_uris = face.get("image_uris", {})
+    else:
+        return None
+    for key in order:
+        if key in img_uris and img_uris.get(key):
+            return img_uris.get(key)
+    return None
+
+
+def build_filename(card: dict) -> str:
+    set_code = (card.get("set") or "UNK").upper()
+    collector = (card.get("collector_number") or "0").replace("/", "-")
+    lang = card.get("lang") or "xx"
+    cid = card.get("oracle_id") or card.get("id") or "unknown"
+    return f"{set_code}_{collector}_{lang}_{cid}.jpg"
+
+
+def ensure_relative_path(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(PROJECT_ROOT).as_posix()
+    except Exception:
+        return path.as_posix()
+
+
+def download_image(session: requests.Session, url: str, out_path: Path) -> None:
+    if out_path.exists():
+        return
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    resp = session.get(url, stream=True, timeout=60)
+    resp.raise_for_status()
+    with out_path.open("wb") as handle:
+        for chunk in resp.iter_content(8192):
+            if chunk:
+                handle.write(chunk)
+
+
 def main():
     # Initialisiere Logging als erstes
     logger = setup_logging()
     
-    parser = argparse.ArgumentParser(description="Lädt Kartendaten von Scryfall herunter und speichert sie in der Datenbank")
+    parser = argparse.ArgumentParser(description="Lädt Scryfall Bulk-Daten (default/oracle) und optional Bilder; befüllt die SQLite-DB.")
     parser.add_argument("--force-download", action="store_true", 
                        help="Erzwingt den Download einer neuen JSON-Datei, auch wenn bereits eine existiert")
     parser.add_argument("--db-path", type=str, default=KARTEN_DB,
                        help=f"Pfad zur Datenbank (Standard: {KARTEN_DB})")
-    parser.add_argument("--bulk-data-dir", type=str, default="tcg_database/bulk_data",
-                       help="Verzeichnis für Bulk-Daten (Standard: tcg_database/bulk_data)")
+    parser.add_argument("--bulk-data-dir", type=str, default=str(Path(DEFAULT_OUT_DIR)/"bulk"),
+                       help="Verzeichnis für Bulk-Daten (Standard: data/scryfall_images/bulk)")
+    parser.add_argument("--out-dir", type=str, default=DEFAULT_OUT_DIR,
+                       help="Zielordner für Scryfall-Bilder (Standard: data/scryfall_images)")
+    parser.add_argument("--langs", type=str, default="en",
+                       help="Komma-separierte Sprachcodes für Bilder (z.B. en,de). Standard: en")
+    parser.add_argument("--bulk-types", type=str, default="default_cards,oracle_cards",
+                       help="Komma-separierte Bulk-Typen: default_cards,oracle_cards,rulings")
+    parser.add_argument("--download-images", action="store_true", default=True,
+                       help="Bilder der default_cards herunterladen (Standard: an)")
+    parser.add_argument("--no-download-images", dest="download_images", action="store_false",
+                       help="Bild-Download deaktivieren")
+    parser.add_argument("--purge-without-images", action="store_true",
+                       help="Entfernt nach Import alle Karten aus der DB, die keinen Eintrag in card_images haben")
+    parser.add_argument("--image-version-order", type=str, default="large,normal,border_crop",
+                       help="Reihenfolge der Bild-Varianten (z.B. large,normal,border_crop oder border_crop,large,normal)")
     parser.add_argument("--skip-download", action="store_true",
                        help="Überspringt den Download und verwendet nur vorhandene JSON-Datei")
     parser.add_argument("--analyze-json", action="store_true",
@@ -434,6 +436,9 @@ def main():
     logger.info("=== SCRYFALL KARTENDATEN UPDATE GESTARTET ===")
     logger.info(f"Datenbank-Pfad: {karten_db}")
     logger.info(f"Bulk-Data-Verzeichnis: {bulk_data_dir}")
+    logger.info(f"Bilder-Ausgabe: {args.out_dir}")
+    logger.info(f"Sprachen: {args.langs}")
+    logger.info(f"Bulk-Typen: {args.bulk_types}")
     logger.info(f"Force Download: {args.force_download}")
     logger.info(f"Skip Download: {args.skip_download}")
     logger.info(f"Analyze JSON: {args.analyze_json}")
@@ -441,9 +446,18 @@ def main():
     try:
         start_time = datetime.now()
         
-        # Schritt 1: Aktuelle Bulk-URL abrufen
-        logger.info("--- Schritt 1: Bulk-URL abrufen ---")
-        bulk_url = get_latest_default_cards_url()
+        # Schritt 1: Bulk-Katalog abrufen und URLs auflösen
+        logger.info("--- Schritt 1: Bulk-Katalog abrufen ---")
+        catalog = get_bulk_catalog()
+        requested_types = [t.strip() for t in (args.bulk_types.split(",") if args.bulk_types else []) if t.strip()]
+        bulk_map: Dict[str, Dict] = {}
+        for t in requested_types:
+            try:
+                item = resolve_bulk_entry(catalog, t)
+                bulk_map[t] = item
+                logger.info(f"Bulk '{t}': {item.get('download_uri')} (size: {item.get('size','?')} bytes, updated: {item.get('updated_at','?')})")
+            except Exception as e:
+                logger.warning(f"Bulk-Typ '{t}' nicht verfügbar: {e}")
         
         # Schritt 2: Bulk-JSON herunterladen (prüft automatisch auf Updates)
         logger.info("--- Schritt 2: Bulk-JSON Download/Prüfung ---")
@@ -457,37 +471,110 @@ def main():
                 logger.info(f"Lösche vorhandene Datei: {os.path.basename(old_file)}")
                 os.remove(old_file)
         
+        downloaded_files: Dict[str, Optional[str]] = {t: None for t in requested_types}
         if not args.skip_download:
-            # Prüfe immer auf Updates, außer wenn explizit übersprungen
-            json_file = download_bulk_json(bulk_url, bulk_data_dir)
+            for t, item in bulk_map.items():
+                try:
+                    downloaded_files[t] = download_bulk_json(item["download_uri"], bulk_data_dir)
+                except Exception as e:
+                    logger.error(f"Download für '{t}' fehlgeschlagen: {e}")
         else:
-            # Nur bei --skip-download: verwende vorhandene Datei
-            logger.info("Download übersprungen - suche lokale Datei")
+            logger.info("Download übersprungen - verwende vorhandene Dateien nach Namensmuster.")
             import glob
-            existing_files = glob.glob(os.path.join(bulk_data_dir, "default-cards*.json"))
-            
-            if existing_files:
-                # Nimm die neueste Datei (sortiert nach Dateinamen = Zeitstempel)
-                json_file = sorted(existing_files)[-1]
-                logger.info(f"Verwende vorhandene Datei: {os.path.basename(json_file)}")
-            else:
-                logger.error(f"Keine JSON-Datei gefunden in {bulk_data_dir}!")
-                logger.info("Tipp: Führe das Skript ohne --skip-download aus, um eine Datei herunterzuladen.")
-                return
+            for t in requested_types:
+                pattern = f"{t.replace('_','-')}*.json"
+                candidates = glob.glob(os.path.join(bulk_data_dir, pattern))
+                if candidates:
+                    downloaded_files[t] = sorted(candidates)[-1]
+                    logger.info(f"Verwende vorhandene Datei für {t}: {os.path.basename(downloaded_files[t])}")
+                else:
+                    logger.error(f"Keine lokale Datei für {t} in {bulk_data_dir} gefunden.")
         
         # Wenn nur Analyse gewünscht ist
         if args.analyze_json:
             logger.info("--- JSON-Struktur-Analyse ---")
-            analyze_json_structure(json_file)
+            for t, path in downloaded_files.items():
+                if path:
+                    logger.info(f"Analysiere {t}: {os.path.basename(path)}")
+                    analyze_json_structure(path)
             return
-        
-        # Schritt 3: Karten einlesen
-        logger.info("--- Schritt 3: Karten einlesen ---")
-        cards = load_cards_from_file(json_file)
-        
-        # Schritt 4: In DB eintragen
-        logger.info("--- Schritt 4: Datenbank-Import ---")
-        upsert_cards(cards, karten_db)
+
+        # Schritt 3: Karten laden und in DB schreiben
+        logger.info("--- Schritt 3: Bulk-Import in Datenbank ---")
+        default_cards_path = downloaded_files.get("default_cards")
+        oracle_cards_path = downloaded_files.get("oracle_cards")
+
+        total_cards = 0
+        total_images = 0
+        langs = {s.strip() for s in (args.langs.split(',') if args.langs else []) if s.strip()}
+
+        # Store initialisieren (Schema/Tabellen)
+        store = SqliteEmbeddingStore(karten_db, emb_dim=1024)
+
+        # Bild-Variantenreihenfolge aus CLI
+        version_order = [v.strip() for v in (args.image_version_order.split(',') if args.image_version_order else []) if v.strip()]
+
+        if oracle_cards_path:
+            # Optional: Wir könnten eine eigene Tabelle für oracle_cards pflegen. Vorerst skippen wir separate Speicherung,
+            # da die Pipeline auf 'karten' (Prints) basiert. Die Felder der default_cards decken unsere DB hinreichend ab.
+            logger.info(f"Oracle Cards Datei vorhanden: {os.path.basename(oracle_cards_path)} (Import wird aktuell übersprungen)")
+
+        if default_cards_path:
+            cards = load_cards_from_file(default_cards_path)
+            total_cards = len(cards)
+            logger.info(f"Default Cards: {total_cards} Karten geladen")
+
+            # Vorab-Schätzung Bilder
+            candidate_images = [c for c in cards if (not langs or (c.get('lang') in langs)) and get_image_uri(c, version_order)]
+            est_count = len(candidate_images)
+            logger.info(f"Vorab-Schätzung: {est_count} Bilder (Sprachen: {sorted(langs) if langs else 'alle'})")
+
+            # Import + optionaler Bild-Download
+            out_dir = Path(args.out_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            session = requests.Session()
+            session.headers.update({"User-Agent": "TCG-Sorter/1.0"})
+
+            inserted_cards = 0
+            downloaded_imgs = 0
+            for idx, card in enumerate(cards, start=1):
+                # Wir erzeugen DB-Einträge nur, wenn wir (oder bereits) ein Bild haben
+                if langs and card.get("lang") not in langs:
+                    continue
+                url = get_image_uri(card, version_order)
+                if not url:
+                    continue
+                filename = build_filename(card)
+                out_path = out_dir / filename
+                try:
+                    if args.download_images:
+                        download_image(session, url, out_path)
+                    # auch wenn Datei schon existierte, DB-Einträge sicherstellen
+                    rel = ensure_relative_path(out_path)
+                    try:
+                        store.upsert_card(card)
+                        inserted_cards += 1
+                    except Exception as e:
+                        logger.debug(f"Konnte Karte nicht upserten ({card.get('id')}): {e}")
+                    try:
+                        store.get_or_create_image(
+                            scryfall_id=card.get("id"),
+                            oracle_id=card.get("oracle_id"),
+                            file_path=rel,
+                            source="scryfall",
+                            language=card.get("lang"),
+                            is_training=True,
+                        )
+                        downloaded_imgs += 1
+                    except Exception as e:
+                        logger.debug(f"card_images upsert fehlgeschlagen ({filename}): {e}")
+                except Exception as e:
+                    logger.debug(f"Bild-Download fehlgeschlagen ({filename}): {e}")
+                if idx % 5000 == 0:
+                    logger.info(f"Fortschritt: {idx}/{total_cards} Karten geprüft, {downloaded_imgs} Bilder/DB-Einträge vorhanden")
+            total_images = downloaded_imgs
+        else:
+            logger.warning("Keine default_cards Datei vorhanden – Bilder-Download und Kartenimport übersprungen.")
         
         # Finale Statistiken
         end_time = datetime.now()
@@ -495,8 +582,33 @@ def main():
         
         logger.info("=== SCRYFALL KARTENDATEN UPDATE ABGESCHLOSSEN ===")
         logger.info(f"Gesamtdauer: {total_duration:.1f} Sekunden ({total_duration/60:.1f} Minuten)")
-        logger.info(f"JSON-Datei: {os.path.basename(json_file)}")
-        logger.info(f"Datenbank: {karten_db}")
+        if default_cards_path:
+            logger.info(f"Default JSON: {os.path.basename(default_cards_path)}")
+        if oracle_cards_path:
+            logger.info(f"Oracle JSON: {os.path.basename(oracle_cards_path)}")
+        logger.info(f"DB: {karten_db}")
+        if default_cards_path:
+            logger.info(f"Karten importiert: ~{total_cards}")
+            logger.info(f"Bilder heruntergeladen: {total_images}")
+
+        # Orphan-Purge: entferne karten-Einträge ohne zugehöriges Bild, wenn gewünscht
+        if args.purge_without_images:
+            try:
+                with sqlite3.connect(karten_db) as conn:
+                    cur = conn.cursor()
+                    cur.execute(
+                        """
+                        DELETE FROM karten
+                        WHERE id NOT IN (
+                            SELECT DISTINCT scryfall_id FROM card_images
+                        )
+                        """
+                    )
+                    removed = cur.rowcount if cur.rowcount is not None else 0
+                    conn.commit()
+                    logger.info(f"Orphan-Purge: {removed} Karten ohne Bilder entfernt.")
+            except Exception as e:
+                logger.warning(f"Orphan-Purge fehlgeschlagen: {e}")
         
     except Exception as e:
         logger.error(f"Kritischer Fehler: {e}", exc_info=True)
