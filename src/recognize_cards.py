@@ -38,6 +38,12 @@ from src.core.image_ops import (
     resolve_resize_hw,
 )
 from src.core.embedding_utils import build_card_embedding
+from src.core.recognition_engine import (
+    EmbeddingIndex,
+    recognize_card,
+    debug_print_recognition_result,
+    PREFERRED_LANGS,
+)
 
 
 def crop_card_roi(img: Image.Image, roi_cfg: Optional[Dict]) -> Image.Image:
@@ -261,45 +267,68 @@ def create_comparison_plot(
 def search_camera_image(
     model: torch.nn.Module,
     transform: T.Compose,
-    db: SimpleCardDB,
+    index: EmbeddingIndex,
     camera_img_path: str,
     device: torch.device,
     config: dict,
     art_crop_cfg: Optional[dict],
     debug_recorder=None,
 ) -> Tuple[Optional[Dict], float, float]:
-    """Berechnet das Query-Embedding und sucht den besten Match in der Datenbank."""
+    """
+    Erkennt eine Karte aus einem Kamerabild mit der neuen Recognition-Engine.
+    
+    Datenfluss:
+    1. Bild laden und ROI schneiden
+    2. recognize_card() aufrufen (Bild → Embedding → Scryfall-ID → Oracle-ID)
+    3. Ergebnis in altes Format konvertieren (für Kompatibilität)
+    """
     start_time = time.time()
 
     with Image.open(camera_img_path) as img:
         rgb = img.convert("RGB")
-        # NEU: Zuerst die Karte per fester ROI aus dem Pi-Cam-Bild schneiden
+        # Karte per ROI aus Pi-Cam-Bild schneiden
         camera_cfg = config.get("camera", {})
         card_roi_cfg = camera_cfg.get("card_roi", None)
         card_img = crop_card_roi(rgb, card_roi_cfg)
 
-        # DANN wie bisher: Artwork-Crop auf der normierten Karte
-        art_img = crop_card_art(card_img, art_crop_cfg)
         if debug_recorder:
+            art_img = crop_card_art(card_img, art_crop_cfg)
             debug_recorder(card_img, art_img, camera_img_path)
-        full_tensor = transform(art_img).unsqueeze(0).to(device)
-
-    with torch.no_grad():
-        query_embedding = build_card_embedding(model, full_tensor).cpu().numpy().flatten()
-
-    search_cfg = config.get("recognition", {})
-    top_k = search_cfg.get("top_k", 5)
-    threshold = search_cfg.get("threshold", 0.88)
-    results = db.search_similar(query_embedding, top_k=top_k, threshold=threshold)
-
-    for rank, hit in enumerate(results, start=1):
-        print(f"[Rank {rank}] {hit['name']} - cos={hit['similarity']:.3f}")
+        
+        # Neue Recognition-Engine verwenden
+        # Datenfluss: Bild → CNN → Query-Embedding → Top-k Prints (Scryfall-ID) → Oracle-Gruppierung
+        result = recognize_card(
+            image=card_img,
+            model=model,
+            index=index,
+            transform=transform,
+            crop_cfg=art_crop_cfg,
+            device=device,
+            k=20,  # Top-20 Prints
+            preferred_langs=PREFERRED_LANGS,  # ["de", "en"]
+        )
 
     elapsed = time.time() - start_time
-    if results:
-        best_match = results[0]
-        return best_match, best_match["similarity"], elapsed
-    return None, 0.0, elapsed
+    
+    if result is None:
+        return None, 0.0, elapsed
+    
+    # Debug-Output
+    debug_print_recognition_result(result)
+    
+    # Konvertiere zu altem Format (für create_comparison_plot)
+    best_match = {
+        "card_uuid": result.scryfall_id,  # Scryfall-ID (konkreter Print)
+        "oracle_id": result.oracle_id,     # Oracle-ID (logische Karte)
+        "name": result.meta.name,
+        "set_code": result.meta.set_code,
+        "collector_number": result.meta.collector_number,
+        "image_path": result.meta.image_path,
+        "lang": result.meta.lang,
+        "similarity": result.similarity,
+    }
+    
+    return best_match, result.similarity, elapsed
 
 
 def test_all_camera_images(
@@ -316,22 +345,17 @@ def test_all_camera_images(
     model.eval()
     print(f"[INFO] Erkennung verwendet Modell: {model_path}")
 
-    print("[INFO] Lade Embedding-Datenbank ...")
+    print("[INFO] Lade Embedding-Index (neue Recognition-Engine) ...")
     db_path = config.get("database", {}).get("sqlite_path", "tcg_database/database/karten.db")
-    db = SimpleCardDB(db_path=db_path, config_path=config_path)
-    print(f"[INFO] Erkennung verwendet Embedding-DB (SQLite): {db.db_path}")
-    if len(db.cards) == 0:
-        print("[WARN] Database ist leer. Bitte zuerst export_embeddings.py ausfuehren.")
+    emb_dim = config.get("encoder", {}).get("emb_dim", config.get("model", {}).get("embed_dim", 1024))
+    
+    # Neue EmbeddingIndex-Klasse verwenden (gruppiert nach Scryfall-ID!)
+    index = EmbeddingIndex(db_path=db_path, mode="runtime", emb_dim=emb_dim)
+    
+    print(f"[INFO] Embedding-Index geladen: {index.size()} Embeddings")
+    if index.size() == 0:
+        print("[WARN] Index ist leer. Bitte zuerst export_embeddings.py ausfuehren.")
         return
-    print(f"[INFO] Database geladen: {len(db.cards)} Karten")
-    db_meta = getattr(db, "meta", {})
-    expected_model = os.path.abspath(model_path)
-    db_model = db_meta.get("model_path")
-    if db_model and os.path.abspath(db_model) != expected_model:
-        print(
-            "[WARN] Embedding-DB wurde mit einem anderen Modell erzeugt: "
-            f"{db_model}. Bitte export_embeddings.py mit dem aktuellen Modell neu ausfuehren."
-        )
 
     paths_cfg = config.get("paths", {})
     resize_hw = resolve_resize_hw(config, paths_cfg.get("scryfall_dir"))
@@ -361,9 +385,7 @@ def test_all_camera_images(
     match_scores: List[float] = []
     total_searches = len(camera_files)
 
-    print("\n[RUN] Starte Similarity-Search fuer alle Camera-Bilder ...")
-    # Kamera-Crop-Dumps sind deaktiviert (nicht mehr benötigt).
-    crop_dump = None
+    print("\n[RUN] Starte Recognition mit neuer Engine (Scryfall-ID → Oracle-ID) ...")
 
     for idx, camera_file in enumerate(tqdm(camera_files, desc="Camera-Bilder", unit="img"), start=1):
         try:
@@ -371,7 +393,7 @@ def test_all_camera_images(
             best_match, similarity_score, search_time = search_camera_image(
                 model,
                 transform,
-                db,
+                index,
                 str(camera_file),
                 device,
                 config,
@@ -399,6 +421,8 @@ def test_all_camera_images(
                 print("   [WARN] Kein Match gefunden.")
         except Exception as exc:
             print(f"   [ERROR] Fehler bei {camera_file.name}: {exc}")
+            import traceback
+            traceback.print_exc()
 
     if not match_scores:
         print("[WARN] Keine Similarity-Werte gesammelt.")
