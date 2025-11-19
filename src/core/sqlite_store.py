@@ -114,11 +114,16 @@ class SqliteEmbeddingStore:
                 conn.execute("ALTER TABLE card_images ADD COLUMN oracle_id TEXT")
             if not _column_exists(conn, "card_embeddings", "oracle_id"):
                 conn.execute("ALTER TABLE card_embeddings ADD COLUMN oracle_id TEXT")
-            # Unique-Index auf oracle_id + file_path, damit reprints zusammenlaufen.
+            
+            # WICHTIG: Unique-Index auf (scryfall_id, file_path), nicht (oracle_id, file_path)!
+            # Jeder Print (scryfall_id) kann nur einmal mit demselben Dateipfad vorkommen.
+            # Verschiedene Prints derselben oracle_id können aber denselben Pfad haben.
+            conn.execute("DROP INDEX IF EXISTS idx_card_images_oracle_file")
             conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_card_images_oracle_file "
-                "ON card_images(oracle_id, file_path)"
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_card_images_scryfall_file "
+                "ON card_images(scryfall_id, file_path)"
             )
+            
             # Vorhandene Daten mit oracle_id aus karten befüllen.
             conn.execute(
                 """
@@ -198,23 +203,28 @@ class SqliteEmbeddingStore:
         is_training: bool,
         oracle_id: Optional[str] = None,
     ) -> int:
-        if not scryfall_id and not oracle_id:
-            raise ValueError("scryfall_id oder oracle_id ist erforderlich.")
-        # oracle_id dient als gemeinsamer Schluessel; falls keine Print-ID vorhanden ist,
-        # verwenden wir sie auch als scryfall_id, um die NOT NULL-Constraint zu erfuellen.
+        """Erstellt oder holt ein Bild-Eintrag basierend auf (scryfall_id, file_path).
+        
+        WICHTIG: UNIQUE constraint ist auf (scryfall_id, file_path), nicht (oracle_id, file_path).
+        """
+        if not scryfall_id:
+            raise ValueError("scryfall_id ist erforderlich.")
+        
         payload = {
-            "scryfall_id": scryfall_id or oracle_id,
+            "scryfall_id": scryfall_id,
             "oracle_id": oracle_id or scryfall_id,
             "file_path": file_path,
             "source": source,
             "language": language,
             "is_training": int(bool(is_training)),
         }
+        # UNIQUE constraint auf (scryfall_id, file_path)
         sql = """
         INSERT INTO card_images (scryfall_id, oracle_id, file_path, source, language, is_training)
         VALUES (:scryfall_id, :oracle_id, :file_path, :source, :language, :is_training)
-        ON CONFLICT(oracle_id, file_path)
-        DO UPDATE SET language=excluded.language, source=excluded.source, is_training=excluded.is_training
+        ON CONFLICT(scryfall_id, file_path)
+        DO UPDATE SET oracle_id=excluded.oracle_id, language=excluded.language, 
+                      source=excluded.source, is_training=excluded.is_training
         """
         with self._connect() as conn:
             cur = conn.execute(sql, payload)
@@ -223,8 +233,8 @@ class SqliteEmbeddingStore:
                 return int(cur.lastrowid)
             # Row existed, fetch id
             cur = conn.execute(
-                "SELECT id FROM card_images WHERE oracle_id = ? AND file_path = ?",
-                (payload["oracle_id"], file_path),
+                "SELECT id FROM card_images WHERE scryfall_id = ? AND file_path = ?",
+                (scryfall_id, file_path),
             )
             row = cur.fetchone()
             if not row:
@@ -303,6 +313,13 @@ def load_embeddings_with_meta(
 ) -> Tuple[Dict[str, List[np.ndarray]], Dict[str, Dict[str, Any]]]:
     """
     Laedt alle Embeddings aus card_embeddings fuer den gegebenen mode.
+    
+    WICHTIG: Gruppiert nach scryfall_id (Print-ID), nicht nach oracle_id!
+    Dies ist korrekt für die Vektorsuche, da jeder Print seine eigenen Embeddings hat.
+    
+    Returns:
+        - Dict[scryfall_id, List[np.ndarray]]: Embeddings gruppiert nach Print-ID
+        - Dict[scryfall_id, Dict]: Metadaten pro Print (inkl. oracle_id als Feld)
     """
     conn = sqlite3.connect(sqlite_path)
     conn.row_factory = sqlite3.Row
@@ -327,40 +344,49 @@ def load_embeddings_with_meta(
     meta_by_card: Dict[str, Dict[str, Any]] = {}
     with conn:
         for row in conn.execute(query, (mode,)):
-            oracle_id = row["emb_oracle_id"] or row["img_oracle_id"] or row["card_oracle_id"]
-            cid = oracle_id or row["scryfall_id"]
-            if cid is None:
+            # Primärschlüssel ist scryfall_id (Print-ID)
+            scryfall_id = row["scryfall_id"]
+            if scryfall_id is None:
                 continue
+            
+            # oracle_id wird als Metadatum mitgeführt
+            oracle_id = row["emb_oracle_id"] or row["img_oracle_id"] or row["card_oracle_id"]
+            
             vec = np.frombuffer(row["emb"], dtype=np.float32)
             if vec.size != emb_dim:
-                raise ValueError(f"Falsche Embedding-Dimension fuer {cid}: {vec.size} != {emb_dim}")
-            embeddings_by_card.setdefault(cid, []).append(vec)
-            if cid not in meta_by_card:
+                raise ValueError(f"Falsche Embedding-Dimension fuer {scryfall_id}: {vec.size} != {emb_dim}")
+            
+            # Gruppierung nach scryfall_id (nicht oracle_id!)
+            embeddings_by_card.setdefault(scryfall_id, []).append(vec)
+            
+            if scryfall_id not in meta_by_card:
                 if row["id"]:
                     meta = _decode_meta_row(row)
+                    # oracle_id wird als Metadatum gespeichert
                     if oracle_id:
                         meta["oracle_id"] = oracle_id
                 else:
-                    meta = {"scryfall_id": cid, "oracle_id": cid}
+                    meta = {"scryfall_id": scryfall_id, "oracle_id": oracle_id or scryfall_id}
                 meta.setdefault("image_paths", [])
-                meta_by_card[cid] = meta
-            meta = meta_by_card[cid]
+                meta_by_card[scryfall_id] = meta
+            
+            meta = meta_by_card[scryfall_id]
             paths: List[str] = meta.setdefault("image_paths", [])
             img_path = row["image_path"]
             if img_path and img_path not in paths:
                 paths.append(img_path)
             if not meta.get("lang") and row["image_language"]:
                 meta["lang"] = row["image_language"]
+        
         # Fallback: falls kein Bildpfad vorhanden (z. B. nur Zentroiden), hole erstmals verfuegbares card_image
         missing_paths = [cid for cid, meta in meta_by_card.items() if not meta.get("image_paths")]
         if missing_paths:
             placeholder = ",".join("?" for _ in missing_paths)
             img_query = (
-                f"SELECT COALESCE(oracle_id, scryfall_id) AS card_id, file_path, language "
-                f"FROM card_images WHERE (oracle_id IN ({placeholder}) OR scryfall_id IN ({placeholder}))"
+                f"SELECT scryfall_id AS card_id, file_path, language "
+                f"FROM card_images WHERE scryfall_id IN ({placeholder})"
             )
-            img_query = "".join(img_query)
-            params = tuple(missing_paths) + tuple(missing_paths)
+            params = tuple(missing_paths)
             for img_row in conn.execute(img_query, params):
                 cid = img_row[0]
                 meta = meta_by_card.get(cid)

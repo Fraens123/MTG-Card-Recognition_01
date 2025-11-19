@@ -364,11 +364,13 @@ def get_image_uri(card: dict, version_order: Optional[List[str]] = None) -> Opti
 
 
 def build_filename(card: dict) -> str:
+    """Erstellt Dateinamen mit Scryfall-ID (id) als Identifier, nicht oracle_id."""
     set_code = (card.get("set") or "UNK").upper()
     collector = (card.get("collector_number") or "0").replace("/", "-")
     lang = card.get("lang") or "xx"
-    cid = card.get("oracle_id") or card.get("id") or "unknown"
-    return f"{set_code}_{collector}_{lang}_{cid}.jpg"
+    # Wichtig: Verwende Scryfall-ID (id), nicht oracle_id
+    scryfall_id = card.get("id") or "unknown"
+    return f"{set_code}_{collector}_{lang}_{scryfall_id}.jpg"
 
 
 def ensure_relative_path(path: Path) -> str:

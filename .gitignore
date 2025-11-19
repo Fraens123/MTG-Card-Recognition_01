@@ -7,6 +7,10 @@ embeddings/*.json
 *.db
 data/cards.json
 data/cards.json.backup
+
+# CSV-Dateien ignorieren
+*.csv
+
 # Ignore all image files everywhere
 *.jpg
 *.jpeg

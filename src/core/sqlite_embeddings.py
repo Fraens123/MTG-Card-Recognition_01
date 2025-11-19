@@ -49,6 +49,10 @@ def load_embeddings_grouped_by_oracle(
     gruppiert sie per oracle_id. Liefert:
       - Dict[oracle_id, np.ndarray] mit Shape [N, emb_dim]
       - Dict[oracle_id, Dict] mit Metadaten-Aggregaten (z.B. name, mana_cost, colors ...)
+    
+    WICHTIG: Diese Funktion ist speziell für Oracle-basierte Analysen (z.B. Cluster-Spread).
+    Für die normale Vektorsuche verwenden Sie load_embeddings_with_meta(), welches nach
+    scryfall_id gruppiert (siehe sqlite_store.py).
     """
     conn = sqlite3.connect(sqlite_path)
     conn.row_factory = sqlite3.Row

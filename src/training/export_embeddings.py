@@ -98,6 +98,11 @@ def _prepare_card_tensors(
     num_aug: int,
     camera_aug_cfg: Dict,
 ) -> Tuple[Dict[str, str], List[torch.Tensor]]:
+    """Bereitet Tensoren für eine Karte vor.
+    
+    Returns:
+        card_dict mit scryfall_id (als card_uuid), Liste von Tensoren
+    """
     img = Image.open(path).convert("RGB")
     card_embeddings_tensors: List[torch.Tensor] = []
 
@@ -110,17 +115,20 @@ def _prepare_card_tensors(
             aug_tensor = _prepare_tensors(aug_img, transform, crop_cfg, device=torch.device("cpu")).squeeze(0)
             card_embeddings_tensors.append(aug_tensor)
 
+    # Parse Dateinamen um Scryfall-ID zu extrahieren
     meta = parse_scryfall_filename(name)
     if meta:
-        card_uuid, set_code, collector_number, card_name = meta
+        scryfall_id, set_code, collector_number, card_name = meta
         card_name = card_name.replace("_", " ")
     else:
-        card_uuid = os.path.splitext(name)[0]
+        # Fallback wenn Dateiname nicht parsbar
+        scryfall_id = os.path.splitext(name)[0]
         set_code = ""
         collector_number = ""
-        card_name = card_uuid
+        card_name = scryfall_id
+    
     card_dict = {
-        "card_uuid": card_uuid,
+        "card_uuid": scryfall_id,  # card_uuid = scryfall_id
         "name": card_name,
         "set_code": set_code,
         "collector_number": collector_number,
@@ -171,6 +179,28 @@ def _infer_language_from_filename(filename: str) -> Optional[str]:
         lang = parts[-2]
         if len(lang) == 2:
             return lang.lower()
+    return None
+
+
+def _get_oracle_id_from_db(store: SqliteEmbeddingStore, scryfall_id: str) -> Optional[str]:
+    """Holt die oracle_id aus der karten-Tabelle für eine gegebene Scryfall-ID.
+    
+    Args:
+        store: SqliteEmbeddingStore Instanz
+        scryfall_id: Die Scryfall-ID (Print-ID)
+        
+    Returns:
+        oracle_id oder None falls nicht gefunden
+    """
+    import sqlite3
+    try:
+        with sqlite3.connect(store.db_path) as conn:
+            cur = conn.execute("SELECT oracle_id FROM karten WHERE id = ?", (scryfall_id,))
+            row = cur.fetchone()
+            if row and row[0]:
+                return row[0]
+    except Exception:
+        pass
     return None
 
 
@@ -263,6 +293,14 @@ def main() -> None:
             continue
         centroid = compute_centroid([v for v, _ in vectors])
 
+        # Hole die echte oracle_id aus der Datenbank
+        # cid ist die scryfall_id (Print-ID)
+        oracle_id = _get_oracle_id_from_db(store, cid)
+        if not oracle_id:
+            # Fallback: verwende scryfall_id falls oracle_id nicht gefunden
+            # (sollte normalerweise nicht vorkommen wenn Daten korrekt geladen wurden)
+            oracle_id = cid
+
         final_records: List[Tuple[np.ndarray, Optional[str], int]] = []
         if export_cfg.get("append_individual", False):
             final_records.extend([(vec, path, idx) for idx, (vec, path) in enumerate(vectors)])
@@ -281,17 +319,19 @@ def main() -> None:
                 image_id = image_cache.get(cache_key)
                 if image_id is None:
                     lang = _infer_language_from_filename(path)
+                    # Wichtig: scryfall_id und oracle_id sind jetzt getrennt
                     image_id = store.get_or_create_image(
                         scryfall_id=cid,
-                        oracle_id=cid,
+                        oracle_id=oracle_id,
                         file_path=rel_path,
                         source="scryfall",
                         language=lang,
                         is_training=True,
                     )
                     image_cache[cache_key] = image_id
+            # Wichtig: scryfall_id (cid) und oracle_id sind jetzt getrennt
             store.add_embedding(
-                scryfall_id=cid, oracle_id=cid, vec=vec, mode=args.mode, aug_index=aug_idx, image_id=image_id
+                scryfall_id=cid, oracle_id=oracle_id, vec=vec, mode=args.mode, aug_index=aug_idx, image_id=image_id
             )
             num_embeddings += 1
 

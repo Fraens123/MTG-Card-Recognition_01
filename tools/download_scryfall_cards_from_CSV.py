@@ -23,7 +23,7 @@ from src.core.sqlite_store import SqliteEmbeddingStore
 
 
 SCRYFALL_API_BASE = "https://api.scryfall.com"
-ALLOWED_LANGS = {"en"}
+ALLOWED_LANGS = {"en", "de"}
 
 
 def _read_csv(csv_path: Path) -> Tuple[list[dict], Dict[str, str]]:
@@ -132,11 +132,12 @@ def get_image_uri(card: dict) -> Optional[str]:
 
 
 def build_filename(card: dict) -> str:
+    """Erstellt Dateinamen mit Scryfall-ID (id) als Identifier, nicht oracle_id."""
     set_code = (card.get("set") or "UNK").upper()
     collector = (card.get("collector_number") or "0").replace("/", "-")
     lang = card.get("lang") or "xx"
-    cid = card.get("oracle_id") or card.get("id") or "unknown"
-    return f"{set_code}_{collector}_{lang}_{cid}.jpg"
+    scryfall_id = card.get("id") or "unknown"
+    return f"{set_code}_{collector}_{lang}_{scryfall_id}.jpg"
 
 
 def ensure_relative_path(path: Path) -> str:
@@ -197,6 +198,9 @@ def main() -> None:
     session.headers.update({"User-Agent": "TCG-Sorter/1.0"})
 
     downloaded = set()
+    total_cards = 0
+    total_prints = 0
+    
     for row in _iter_rows(rows, fieldnames):
         display = row.get("name") or row.get("scryfall_id") or row.get("oracle_id") or "unknown"
         try:
@@ -211,14 +215,22 @@ def main() -> None:
             continue
 
         print(f"[INFO] Lade Prints für {display}")
+        total_cards += 1
+        card_prints = 0
+        
         for card in iter_prints(session, prints_uri, args.delay):
-            cid = card.get("id")
+            scryfall_id = card.get("id")
             oracle_id = card.get("oracle_id") or base_card.get("oracle_id")
             lang = card.get("lang")
-            card_key = cid
-            if not card_key or lang not in ALLOWED_LANGS:
+            
+            if not scryfall_id:
                 continue
-            if (card_key, lang) in downloaded:
+            
+            if lang not in ALLOWED_LANGS:
+                continue
+            
+            cache_key = (scryfall_id, lang)
+            if cache_key in downloaded:
                 continue
 
             img_url = get_image_uri(card)
@@ -228,7 +240,7 @@ def main() -> None:
             try:
                 store.upsert_card(card)
             except Exception as exc:
-                print(f"[WARN] Konnte Karte nicht speichern ({cid}): {exc}")
+                print(f"[WARN] Konnte Karte nicht speichern ({scryfall_id}): {exc}")
                 continue
 
             filename = build_filename(card)
@@ -242,19 +254,25 @@ def main() -> None:
             rel_path = ensure_relative_path(out_path)
             try:
                 store.get_or_create_image(
-                    scryfall_id=cid,
-                    oracle_id=oracle_id or cid,
+                    scryfall_id=scryfall_id,
+                    oracle_id=oracle_id,
                     file_path=rel_path,
                     source="scryfall",
                     language=lang,
                     is_training=True,
                 )
             except Exception as exc:
-                print(f"[WARN] Konnte card_image nicht speichern ({cid}): {exc}")
-            downloaded.add((card_key, lang))
+                print(f"[WARN] Konnte card_image nicht speichern ({scryfall_id}): {exc}")
+                continue
+            
+            downloaded.add(cache_key)
+            card_prints += 1
             time.sleep(args.delay)
+        
+        total_prints += card_prints
+        print(f"[INFO] {display}: {card_prints} Prints gespeichert (EN/DE)")
 
-    print(f"[OK] Fertig. {len(downloaded)} Bilder gespeichert in {out_dir}")
+    print(f"[OK] Fertig. {total_cards} Karten verarbeitet, {total_prints} Prints gespeichert in {out_dir}")
 
 
 if __name__ == "__main__":

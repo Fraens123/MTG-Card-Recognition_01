@@ -101,15 +101,21 @@ def _denormalize(tensor: torch.Tensor) -> torch.Tensor:
 
 
 def parse_scryfall_filename(filename: str) -> Optional[Tuple[str, str, str, str]]:
-    """Parst verschiedene Scryfall-Dateiformate."""
+    """Parst verschiedene Scryfall-Dateiformate.
+    
+    Returns:
+        Tuple mit (scryfall_id, set_code, collector_number, card_name)
+        card_uuid ist die Scryfall-ID aus dem Dateinamen (letzter Teil vor .jpg)
+    """
     name, _ = os.path.splitext(os.path.basename(filename))
     parts = name.split("_")
     if len(parts) >= 4:
         set_code = parts[0]
         collector_number = parts[1]
-        card_uuid = parts[-1]
+        # Der letzte Teil ist die Scryfall-ID
+        scryfall_id = parts[-1]
         card_name = "_".join(parts[2:-1])
-        return card_uuid, set_code, collector_number, card_name
+        return scryfall_id, set_code, collector_number, card_name
 
     if "-" in name:
         parts = name.split("-", 2)

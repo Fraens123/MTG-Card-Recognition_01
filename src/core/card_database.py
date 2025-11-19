@@ -10,7 +10,11 @@ from src.core.sqlite_store import load_embeddings_with_meta
 
 
 class SimpleCardDB:
-    """SQLite-basierte Embedding-Datenbank fuer die Laufzeit-Erkennung."""
+    """SQLite-basierte Embedding-Datenbank fuer die Laufzeit-Erkennung.
+    
+    Verwendet scryfall_id als Primärschlüssel für Embeddings und Kartenzuordnung.
+    oracle_id wird nur als Metadatum mitgeführt (logische Kartenvariante).
+    """
 
     def __init__(
         self,
@@ -35,17 +39,20 @@ class SimpleCardDB:
             self.load_from_sqlite()
 
     def load_from_sqlite(self) -> None:
+        """Lädt Embeddings gruppiert nach scryfall_id (Print-ID)."""
         if not self.db_path.exists():
             self.cards = []
             self.embeddings = None
             return
+        # load_embeddings_with_meta gruppiert nach scryfall_id (nicht oracle_id!)
         embeddings_by_card, meta_by_card = load_embeddings_with_meta(str(self.db_path), self.mode, self.emb_dim)
         cards: List[Dict[str, Any]] = []
         vectors: List[np.ndarray] = []
         for cid, vecs in embeddings_by_card.items():
             meta = meta_by_card.get(cid, {})
             base = {
-                "card_uuid": cid,
+                "card_uuid": cid,  # card_uuid ist die scryfall_id
+                "oracle_id": meta.get("oracle_id", cid),  # oracle_id als Metadatum
                 "name": meta.get("name") or cid,
                 "set_code": meta.get("set") or "",
                 "collector_number": meta.get("collector_number") or "",
