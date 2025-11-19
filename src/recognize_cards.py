@@ -38,7 +38,7 @@ from src.core.image_ops import (
     resolve_resize_hw,
 )
 from src.core.embedding_utils import build_card_embedding
-from src.ocr import run_ocr_for_card_image, select_print_with_ocr
+from src.ocr import run_ocr_for_card_image, select_print_with_ocr, score_candidate_with_ocr
 
 
 def crop_card_roi(img: Image.Image, roi_cfg: Optional[Dict]) -> Image.Image:
@@ -116,7 +116,9 @@ def create_comparison_plot(
     camera_img: Image.Image,
     best_match: Dict,
     similarity_score: float,
-    search_time: float,
+    total_time: float,
+    cnn_time_ms: float,
+    ocr_time_ms: float,
     output_path: str,
 ) -> None:
     """Erstellt eine Side-by-Side-Abbildung zwischen Kameraaufnahme und Scryfall-Referenz."""
@@ -182,10 +184,36 @@ def create_comparison_plot(
         f"* Camera File: {camera_filename}\n"
         f"* Best Match: {best_match['name']} (Set: {best_match['set_code']}, #{best_match['collector_number']})\n"
         f"* Cosine Similarity: {similarity_score:.4f} ({similarity_score*100:.1f}%)\n"
-        f"* Search Time: {search_time*1000:.2f} ms\n"
+        f"* Total Time: {total_time*1000:.2f} ms\n"
+        f"* CNN Time: {cnn_time_ms:.2f} ms\n"
+        f"* OCR Time: {ocr_time_ms:.2f} ms\n"
         f"* Card UUID: {best_match['card_uuid'][:8]}...\n"
         f"* Image Path: {Path(best_match['image_path']).name}"
     )
+
+    sel = best_match.get("selection_info")
+    if sel:
+        info_text += "\n\nOCR DETAILS:\n"
+        info_text += f"* Strategy: {sel.get('strategy','-')}\n"
+        oracle = sel.get('oracle', {})
+        if oracle:
+            info_text += f"* Oracle-ID: {str(oracle.get('id',''))[:8]}...  (prints: {oracle.get('candidates',0)})\n"
+        ocr = sel.get('ocr', {})
+        if ocr:
+            info_text += (
+                f"* OCR Name: '{(ocr.get('best_name') or '')[:30]}'\n"
+                f"* OCR Collector: {ocr.get('collector_clean') or ''}\n"
+                f"* OCR SetID: {ocr.get('setid_clean') or ''}\n"
+                f"* OCR Quality: {ocr.get('collector_set_score',0)}\n"
+            )
+        top_scores = sel.get('top_ocr_scores') or []
+        if top_scores:
+            best = top_scores[0]
+            info_text += (
+                f"* Top OCR Candidate: {best.get('name','')}"
+                f" [{best.get('set_code','')}] #{best.get('collector_number','')}"
+                f" (score={best.get('score',0):.3f})\n"
+            )
 
     if similarity_score > 0.8:
         color, status = ("green", "EXCELLENT MATCH")
@@ -269,7 +297,7 @@ def search_camera_image(
     art_crop_cfg: Optional[dict],
     debug_recorder=None,
     use_ocr: bool = True,
-) -> Tuple[Optional[Dict], float, float]:
+) -> Tuple[Optional[Dict], float, float, Dict[str, float]]:
     """
     Berechnet das Query-Embedding und sucht den besten Match in der Datenbank.
     
@@ -281,6 +309,8 @@ def search_camera_image(
         use_ocr: True = OCR-Verfeinerung aktivieren, False = nur CNN
     """
     start_time = time.time()
+    cnn_time_ms = 0.0
+    ocr_time_ms = 0.0
 
     with Image.open(camera_img_path) as img:
         rgb = img.convert("RGB")
@@ -296,19 +326,20 @@ def search_camera_image(
         full_tensor = transform(art_img).unsqueeze(0).to(device)
 
     with torch.no_grad():
+        t0_cnn = time.time()
         query_embedding = build_card_embedding(model, full_tensor).cpu().numpy().flatten()
-
-    search_cfg = config.get("recognition", {})
-    top_k = search_cfg.get("top_k", 5)
-    threshold = search_cfg.get("threshold", 0.88)
-    results = db.search_similar(query_embedding, top_k=top_k, threshold=threshold)
+        search_cfg = config.get("recognition", {})
+        top_k = search_cfg.get("top_k", 5)
+        threshold = search_cfg.get("threshold", 0.88)
+        results = db.search_similar(query_embedding, top_k=top_k, threshold=threshold)
+        cnn_time_ms = (time.time() - t0_cnn) * 1000.0
 
     for rank, hit in enumerate(results, start=1):
         print(f"[Rank {rank}] {hit['name']} - cos={hit['similarity']:.3f}")
 
     if not results:
         elapsed = time.time() - start_time
-        return None, 0.0, elapsed
+        return None, 0.0, elapsed, {"cnn_ms": cnn_time_ms, "ocr_ms": ocr_time_ms}
 
     best_match_cnn = results[0]
     
@@ -322,28 +353,75 @@ def search_camera_image(
             
             if len(oracle_candidates) > 1:
                 # OCR auf Kamera-Bild ausführen
+                t0_ocr = time.time()
                 ocr_result = run_ocr_for_card_image(camera_img_path, config)
                 print(f"[OCR] Erkannt: Name='{ocr_result.best_name[:30]}...', "
                       f"Collector={ocr_result.collector_clean}, Set={ocr_result.setid_clean}")
                 
                 # Besten Print anhand OCR-Daten auswählen
                 best_match_ocr = select_print_with_ocr(best_match_cnn, oracle_candidates, ocr_result)
+                # Scoring-Übersicht berechnen (Top-3) für Dokumentation
+                scored = []
+                try:
+                    for cand in oracle_candidates:
+                        s = float(score_candidate_with_ocr(cand, ocr_result))
+                        entry = {
+                            "name": cand.get("name"),
+                            "set_code": cand.get("set_code"),
+                            "collector_number": cand.get("collector_number"),
+                            "scryfall_id": cand.get("card_uuid") or cand.get("scryfall_id"),
+                            "score": s,
+                        }
+                        scored.append(entry)
+                    scored.sort(key=lambda e: -e["score"])
+                except Exception:
+                    scored = []
                 if best_match_ocr:
                     print(f"[OCR] OCR wählt: {best_match_ocr['name']} "
                           f"(Set: {best_match_ocr['set_code']}, #{best_match_ocr['collector_number']})")
                     # Similarity vom CNN-Best-Match übernehmen
                     best_match_ocr["similarity"] = best_match_cnn["similarity"]
+                    # Auswahl-Dokumentation anreichern
+                    best_match_ocr["selection_info"] = {
+                        "strategy": (
+                            "ocr-confirmed" if (best_match_ocr.get("card_uuid") == best_match_cnn.get("card_uuid")) else "ocr-selected"
+                        ),
+                        "oracle": {"id": oracle_id, "candidates": len(oracle_candidates)},
+                        "ocr": {
+                            "best_name": ocr_result.best_name,
+                            "collector_clean": ocr_result.collector_clean,
+                            "setid_clean": ocr_result.setid_clean,
+                            "collector_set_score": ocr_result.collector_set_score,
+                        },
+                        "top_ocr_scores": scored[:3],
+                    }
+                    ocr_time_ms = (time.time() - t0_ocr) * 1000.0
                     elapsed = time.time() - start_time
-                    return best_match_ocr, best_match_ocr["similarity"], elapsed
+                    return best_match_ocr, best_match_ocr["similarity"], elapsed, {"cnn_ms": cnn_time_ms, "ocr_ms": ocr_time_ms}
                 else:
                     print("[OCR] OCR-Auswahl fehlgeschlagen, verwende CNN-Best-Match")
+                    best_match_cnn["selection_info"] = {
+                        "strategy": "cnn",
+                        "oracle": {"id": oracle_id, "candidates": len(oracle_candidates)},
+                        "reason": "ocr_selection_failed",
+                    }
+                    ocr_time_ms = (time.time() - t0_ocr) * 1000.0
             else:
                 print("[OCR] Nur 1 Print vorhanden, OCR übersprungen")
+                best_match_cnn["selection_info"] = {
+                    "strategy": "cnn",
+                    "oracle": {"id": oracle_id, "candidates": len(oracle_candidates)},
+                    "reason": "single_print_in_oracle",
+                }
         else:
             print("[OCR] Keine Oracle-ID verfügbar, verwende CNN-Best-Match")
+            best_match_cnn["selection_info"] = {
+                "strategy": "cnn",
+                "reason": "no_oracle_id",
+            }
 
     elapsed = time.time() - start_time
-    return best_match_cnn, best_match_cnn["similarity"], elapsed
+    return best_match_cnn, best_match_cnn["similarity"], elapsed, {"cnn_ms": cnn_time_ms, "ocr_ms": ocr_time_ms}
 
 
 def test_all_camera_images(
@@ -412,7 +490,7 @@ def test_all_camera_images(
     for idx, camera_file in enumerate(tqdm(camera_files, desc="Camera-Bilder", unit="img"), start=1):
         try:
             print(f"\n[{idx}/{total_searches}] [RUN] Verarbeite: {camera_file.name}")
-            best_match, similarity_score, search_time = search_camera_image(
+            best_match, similarity_score, search_time, timings = search_camera_image(
                 model,
                 transform,
                 db,
@@ -427,7 +505,7 @@ def test_all_camera_images(
 
             if best_match:
                 print(f"   [MATCH] {best_match['name']} (cos={similarity_score:.4f})")
-                print(f"   [TIME]  {search_time*1000:.2f} ms")
+                print(f"   [TIME]  total={search_time*1000:.2f} ms | cnn={timings.get('cnn_ms',0.0):.2f} ms | ocr={timings.get('ocr_ms',0.0):.2f} ms")
                 with Image.open(camera_file) as cam_img_raw:
                     camera_img = cam_img_raw.convert("RGB")
                     comparison_path = output_path / f"{camera_file.stem}_comparison.png"
@@ -437,6 +515,8 @@ def test_all_camera_images(
                         best_match,
                         similarity_score,
                         search_time,
+                        timings.get('cnn_ms', 0.0),
+                        timings.get('ocr_ms', 0.0),
                         str(comparison_path),
                     )
             else:
