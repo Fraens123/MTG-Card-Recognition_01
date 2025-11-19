@@ -35,6 +35,7 @@ class SimpleCardDB:
         self.cards: List[Dict[str, Any]] = []
         self.embeddings: Optional[np.ndarray] = None
         self.meta: Dict[str, Any] = {"mode": self.mode, "sqlite_path": str(self.db_path)}
+        self._oracle_index: Dict[str, List[int]] = {}  # Oracle-ID → Liste von Card-Indizes
         if load_existing:
             self.load_from_sqlite()
 
@@ -69,7 +70,34 @@ class SimpleCardDB:
             self.embeddings = arr / np.clip(norms, 1e-12, None)
         else:
             self.embeddings = None
+        
+        # Oracle-Index aufbauen
+        self._build_oracle_index()
 
+    def _build_oracle_index(self) -> None:
+        """Baut Index für schnellen Oracle-ID-Zugriff auf."""
+        self._oracle_index = {}
+        for idx, card in enumerate(self.cards):
+            oracle_id = card.get("oracle_id")
+            if oracle_id:
+                self._oracle_index.setdefault(oracle_id, []).append(idx)
+    
+    def get_cards_by_oracle_id(self, oracle_id: str) -> List[Dict[str, Any]]:
+        """
+        Gibt alle Prints mit derselben Oracle-ID zurück.
+        
+        Args:
+            oracle_id: Die Oracle-ID der logischen Karte
+            
+        Returns:
+            Liste von Karten-Dicts (Prints)
+        """
+        if not oracle_id or oracle_id not in self._oracle_index:
+            return []
+        
+        indices = self._oracle_index[oracle_id]
+        return [self.cards[idx].copy() for idx in indices]
+    
     def search_similar(self, query_embedding: np.ndarray, top_k: int = 5, threshold: float = 0.7) -> List[Dict[str, Any]]:
         if self.embeddings is None or len(self.cards) == 0:
             return []

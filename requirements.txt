@@ -23,6 +23,10 @@ typer>=0.12.5
 # Visualization
 matplotlib>=3.8.0
 
+# OCR Dependencies
+pytesseract>=0.3.10
+rapidfuzz>=3.0.0
+
 # Development Tools
 pytest>=7.4.0
 

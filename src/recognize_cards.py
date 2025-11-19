@@ -38,6 +38,7 @@ from src.core.image_ops import (
     resolve_resize_hw,
 )
 from src.core.embedding_utils import build_card_embedding
+from src.ocr import run_ocr_for_card_image, select_print_with_ocr
 
 
 def crop_card_roi(img: Image.Image, roi_cfg: Optional[Dict]) -> Image.Image:
@@ -267,8 +268,18 @@ def search_camera_image(
     config: dict,
     art_crop_cfg: Optional[dict],
     debug_recorder=None,
+    use_ocr: bool = True,
 ) -> Tuple[Optional[Dict], float, float]:
-    """Berechnet das Query-Embedding und sucht den besten Match in der Datenbank."""
+    """
+    Berechnet das Query-Embedding und sucht den besten Match in der Datenbank.
+    
+    Zwei-stufige Erkennung:
+    1. CNN-Embedding-Suche findet Top-1-Match (scryfall_id)
+    2. OCR verfeinert Auswahl unter allen Prints derselben Oracle-ID
+    
+    Args:
+        use_ocr: True = OCR-Verfeinerung aktivieren, False = nur CNN
+    """
     start_time = time.time()
 
     with Image.open(camera_img_path) as img:
@@ -295,11 +306,44 @@ def search_camera_image(
     for rank, hit in enumerate(results, start=1):
         print(f"[Rank {rank}] {hit['name']} - cos={hit['similarity']:.3f}")
 
+    if not results:
+        elapsed = time.time() - start_time
+        return None, 0.0, elapsed
+
+    best_match_cnn = results[0]
+    
+    # === STUFE 2: OCR-Verfeinerung ===
+    if use_ocr:
+        oracle_id = best_match_cnn.get("oracle_id")
+        if oracle_id:
+            print(f"[OCR] Lade alle Prints für Oracle-ID: {oracle_id[:8]}...")
+            oracle_candidates = db.get_cards_by_oracle_id(oracle_id)
+            print(f"[OCR] Gefunden: {len(oracle_candidates)} Print-Varianten")
+            
+            if len(oracle_candidates) > 1:
+                # OCR auf Kamera-Bild ausführen
+                ocr_result = run_ocr_for_card_image(camera_img_path, config)
+                print(f"[OCR] Erkannt: Name='{ocr_result.best_name[:30]}...', "
+                      f"Collector={ocr_result.collector_clean}, Set={ocr_result.setid_clean}")
+                
+                # Besten Print anhand OCR-Daten auswählen
+                best_match_ocr = select_print_with_ocr(best_match_cnn, oracle_candidates, ocr_result)
+                if best_match_ocr:
+                    print(f"[OCR] OCR wählt: {best_match_ocr['name']} "
+                          f"(Set: {best_match_ocr['set_code']}, #{best_match_ocr['collector_number']})")
+                    # Similarity vom CNN-Best-Match übernehmen
+                    best_match_ocr["similarity"] = best_match_cnn["similarity"]
+                    elapsed = time.time() - start_time
+                    return best_match_ocr, best_match_ocr["similarity"], elapsed
+                else:
+                    print("[OCR] OCR-Auswahl fehlgeschlagen, verwende CNN-Best-Match")
+            else:
+                print("[OCR] Nur 1 Print vorhanden, OCR übersprungen")
+        else:
+            print("[OCR] Keine Oracle-ID verfügbar, verwende CNN-Best-Match")
+
     elapsed = time.time() - start_time
-    if results:
-        best_match = results[0]
-        return best_match, best_match["similarity"], elapsed
-    return None, 0.0, elapsed
+    return best_match_cnn, best_match_cnn["similarity"], elapsed
 
 
 def test_all_camera_images(

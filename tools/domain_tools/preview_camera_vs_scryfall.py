@@ -53,20 +53,42 @@ def crop_card_roi(img: Image.Image, roi_cfg: Optional[Dict]) -> Image.Image:
     return img.crop((x0, y0, x1, y1))
 
 
-def draw_roi_overlay(img: Image.Image, roi_cfg: Optional[Dict]) -> Image.Image:
+def draw_overlay(
+    img: Image.Image,
+    roi_cfg: Optional[Dict],
+    name_box: Optional[Tuple[int, int, int, int]] = None,
+    collector_box: Optional[Tuple[int, int, int, int]] = None,
+    setid_box: Optional[Tuple[int, int, int, int]] = None,
+) -> Image.Image:
+    """Zeichnet Karten-ROI sowie optional OCR-Boxen für Name / Collector / SetID."""
     overlay = img.copy()
-    if not roi_cfg:
-        return overlay
     w, h = overlay.size
-    try:
-        x0 = int(float(roi_cfg.get("x_min", 0.0)) * w)
-        y0 = int(float(roi_cfg.get("y_min", 0.0)) * h)
-        x1 = int(float(roi_cfg.get("x_max", 1.0)) * w)
-        y1 = int(float(roi_cfg.get("y_max", 1.0)) * h)
-    except Exception:
-        return overlay
     draw = ImageDraw.Draw(overlay)
-    draw.rectangle((x0, y0, x1, y1), outline="red", width=max(2, int(min(w, h) * 0.005)))
+
+    # Karten ROI
+    if roi_cfg:
+        try:
+            x0 = int(float(roi_cfg.get("x_min", 0.0)) * w)
+            y0 = int(float(roi_cfg.get("y_min", 0.0)) * h)
+            x1 = int(float(roi_cfg.get("x_max", 1.0)) * w)
+            y1 = int(float(roi_cfg.get("y_max", 1.0)) * h)
+            draw.rectangle((x0, y0, x1, y1), outline="red", width=max(2, int(min(w, h) * 0.005)))
+        except Exception:
+            pass
+
+    # Name Box (gelb)
+    if name_box:
+        nx, ny, nw, nh = name_box
+        draw.rectangle((nx, ny, nx + nw, ny + nh), outline="yellow", width=3)
+    # Collector Box (orange)
+    if collector_box:
+        cx, cy, cw, ch = collector_box
+        draw.rectangle((cx, cy, cx + cw, cy + ch), outline="orange", width=3)
+    # SetID Box (cyan)
+    if setid_box:
+        sx, sy, sw, sh = setid_box
+        draw.rectangle((sx, sy, sx + sw, sy + sh), outline="cyan", width=3)
+
     return overlay
 
 
@@ -149,12 +171,25 @@ def stack_sections(sections: List[List[Image.Image]], gap: int = 12) -> Image.Im
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Vergleich Pi-Cam Crops vs. Scryfall Crops")
+    parser = argparse.ArgumentParser(description="Vergleich Pi-Cam Crops vs. Scryfall Crops (inkl. OCR-Boxen)")
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--camera-dir", default=None, help="Override fuer paths.camera_dir")
     parser.add_argument("--scryfall-dir", default=None, help="Override fuer paths.scryfall_dir")
     parser.add_argument("--max-images", type=int, default=5)
     parser.add_argument("--output-dir", default="debug/camera_vs_scryfall")
+    # OCR Box Parameter
+    parser.add_argument("--name-x", type=int, default=100)
+    parser.add_argument("--name-y", type=int, default=50)
+    parser.add_argument("--name-w", type=int, default=2750)
+    parser.add_argument("--name-h", type=int, default=200)
+    parser.add_argument("--collector-x", type=int, default=100)
+    parser.add_argument("--collector-y", type=int, default=3600)
+    parser.add_argument("--collector-w", type=int, default=500)
+    parser.add_argument("--collector-h", type=int, default=80)
+    parser.add_argument("--setid-x", type=int, default=100)
+    parser.add_argument("--setid-y", type=int, default=3700)
+    parser.add_argument("--setid-w", type=int, default=500)
+    parser.add_argument("--setid-h", type=int, default=80)
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -179,12 +214,15 @@ def main() -> None:
     for idx, cam_path in enumerate(cam_files[: args.max_images], start=1):
         with Image.open(cam_path) as cam_img_raw:
             cam_img = cam_img_raw.convert("RGB")
-        overlay = draw_roi_overlay(cam_img, roi_cfg)
+        name_box = (args.name_x, args.name_y, args.name_w, args.name_h)
+        collector_box = (args.collector_x, args.collector_y, args.collector_w, args.collector_h)
+        setid_box = (args.setid_x, args.setid_y, args.setid_w, args.setid_h)
+        overlay = draw_overlay(cam_img, roi_cfg, name_box, collector_box, setid_box)
         card = crop_card_roi(cam_img, roi_cfg)
         cam_art = crop_card_art(card, art_cfg)
 
         tiles_camera = [
-            prepare_tile(overlay, "Pi-Cam Original + ROI", 900),
+            prepare_tile(overlay, "Pi-Cam Original + ROI + OCR", 900),
             prepare_tile(card, "Pi-Cam ROI-Karte", 900),
             prepare_tile(cam_art, "Pi-Cam Artwork-Crop", 900),
         ]
@@ -200,8 +238,9 @@ def main() -> None:
             with Image.open(scry_path) as scry_img_raw:
                 scry_img = scry_img_raw.convert("RGB")
             scry_art = crop_card_art(scry_img, art_cfg)
+            scry_overlay = draw_overlay(scry_img, None, name_box, collector_box, setid_box)
             tiles_scryfall = [
-                prepare_tile(scry_img, f"Scryfall Original {fallback_label}".strip(), 900),
+                prepare_tile(scry_overlay, f"Scryfall Original+OCR {fallback_label}".strip(), 900),
                 prepare_tile(scry_art, "Scryfall Artwork-Crop", 900),
             ]
 

@@ -125,3 +125,20 @@ analysis:
   thresholds:
     spread_max: 0.90   # Flag, wenn intra_max_dist > spread_max
     overlap: 0.60      # Flag, wenn nearest_neighbor_dist < overlap
+
+ocr_crops:
+  name:
+    x: 100
+    y: 150
+    w: 2400 
+    h: 250
+  collector:
+    x: 100
+    y: 3250
+    w: 500
+    h: 100
+  setid:
+    x: 100
+    y: 3320
+    w: 500
+    h: 100
