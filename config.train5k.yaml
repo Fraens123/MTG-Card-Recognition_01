@@ -39,22 +39,26 @@ training:
       blur_prob: 0.1
       noise_std: 0.02
   fine:
-    batch_size: 96
+    batch_size: 128         # mehr GPU-Last
     epochs: 20
-    lr: 0.0002
-    margin: 0.5
-    freeze_ratio: 0.6
+    lr: 0.0001              # konservativer
+    margin: 0.4             # sanfter
+    freeze_ratio: 0.4       # mehr Backbone trainieren
     triplet_weight: 1.0
-    ce_weight: 0.2
-    num_workers: 6
-    cache_images: false
-    cache_size: 3000
+    ce_weight: 0.3          # Klassifikator etwas höher
+    num_workers: 8
+    cache_images: true
+    cache_size: 4000
     use_camera_images: false
+    hard_negatives:
+      enabled: true
+      top_k: 20
+      file: "debug/hard_negatives.json"
     scheduler:
       type: warmup_cosine
       warmup_epochs: 2
       warmup_start_factor: 0.2
-      min_lr: 3.0e-5
+      min_lr: 2.0e-5
     augment:
       camera_like: true
       rotation_deg: 2
@@ -95,3 +99,26 @@ embedding_export_analysis:
   append_centroid: true
   export_batch_size: 128
   num_workers: 8
+
+analysis:
+  oracle_summary_file: "debug/oracle_cluster_summary.json"
+
+pipeline:
+  scenario: full
+  scenarios:
+    full:
+      - coarse
+      - export_analysis_coarse
+      - oracle_analysis_for_hardneg
+      - build_hard_negatives
+      - fine
+      - export_runtime_fine
+      - export_analysis_fine
+      - analyze_embeddings
+      - oracle_analysis_final
+    fast_debug:
+      - coarse
+      - fine
+      - export_runtime_fine
+    only_export_runtime:
+      - export_runtime_fine

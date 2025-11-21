@@ -1,4 +1,9 @@
 
+Trainingspipline starten:
+python -m src.training.main
+
+----------------------------------------------------------------------------------------
+
 Export Embeddings:
 
 Runtime-Export (1 Zentroid pro Karte):

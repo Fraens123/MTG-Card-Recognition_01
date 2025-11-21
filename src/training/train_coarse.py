@@ -3,6 +3,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Optional
+import time
 import torch
 from torch import nn
 from torch.optim import Adam
@@ -84,6 +85,7 @@ def _build_scheduler(optimizer: torch.optim.Optimizer, train_cfg: dict) -> Optio
 
 
 def main() -> None:
+    start_time = time.time()
     args = parse_args()
     cfg = load_config(args.config)
     train_cfg = get_training_config(cfg, "coarse")
@@ -113,6 +115,19 @@ def main() -> None:
     os.makedirs(log_dir, exist_ok=True)
     print(f"[LOG] TensorBoard unter {log_dir}")
     writer = SummaryWriter(log_dir=log_dir)
+
+    # Hyperparameter-Übersicht ausgeben
+    sched_cfg = train_cfg.get("scheduler", {})
+    print(
+        "[HP] coarse: "
+        f"epochs={train_cfg.get('epochs')} "
+        f"bs={train_cfg.get('batch_size')} "
+        f"lr={train_cfg.get('lr')} "
+        f"num_workers={train_cfg.get('num_workers')} "
+        f"cache_images={train_cfg.get('cache_images')} "
+        f"cache_size={train_cfg.get('cache_size')} "
+        f"sched={sched_cfg.get('type') or 'none'}"
+    )
 
     best_loss = float("inf")
     best_state = None
@@ -167,6 +182,8 @@ def main() -> None:
     out_path = os.path.join(cfg["paths"]["models_dir"], "encoder_coarse.pt")
     save_encoder(model, out_path, card_ids=dataset.card_ids)
     print(f"[INFO] Bestes Modell gespeichert unter {out_path}")
+    elapsed = time.time() - start_time
+    print(f"[TIME] coarse-training abgeschlossen in {elapsed/60:.2f} min")
     print("[NEXT] Fine-Tuning starten: python -m src.training.train_fine --config config.yaml")
 
 

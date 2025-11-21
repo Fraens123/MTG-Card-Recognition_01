@@ -1,6 +1,7 @@
 ﻿import argparse
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 import torch
@@ -105,6 +106,7 @@ def _build_scheduler(optimizer: torch.optim.Optimizer, train_cfg: dict) -> Optio
 
 
 def main() -> None:
+    start_time = time.time()
     args = parse_args()
     cfg = load_config(args.config)
     train_cfg = get_training_config(cfg, "fine")
@@ -134,9 +136,11 @@ def main() -> None:
     freeze_ratio = float(train_cfg.get("freeze_ratio", 0.6))
     _freeze_model(model, freeze_ratio)
 
-    optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=float(train_cfg.get("lr", 1e-4)))
+    lr = float(train_cfg.get("lr", 1e-4))
+    optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
     scheduler = _build_scheduler(optimizer, train_cfg)
-    triplet_loss = nn.TripletMarginLoss(margin=float(train_cfg.get("margin", 0.5)), p=2)
+    margin = float(train_cfg.get("margin", 0.5))
+    triplet_loss = nn.TripletMarginLoss(margin=margin, p=2)
     ce_loss = nn.CrossEntropyLoss()
     triplet_weight = float(train_cfg.get("triplet_weight", 1.0))
     ce_weight = float(train_cfg.get("ce_weight", 0.2))
@@ -146,6 +150,21 @@ def main() -> None:
     os.makedirs(log_dir, exist_ok=True)
     print(f"[LOG] TensorBoard unter {log_dir}")
     writer = SummaryWriter(log_dir=log_dir)
+
+    # Hyperparameter kurz loggen
+    sched_cfg = train_cfg.get("scheduler", {})
+    print(
+        "[HP] fine: "
+        f"epochs={train_cfg.get('epochs')} "
+        f"bs={train_cfg.get('batch_size')} "
+        f"lr={lr} "
+        f"num_workers={train_cfg.get('num_workers')} "
+        f"cache_images={train_cfg.get('cache_images')} "
+        f"cache_size={train_cfg.get('cache_size')} "
+        f"sched={sched_cfg.get('type') or 'none'} "
+        f"triplet_w={triplet_weight} ce_w={ce_weight} "
+        f"margin={margin} freeze_ratio={freeze_ratio}"
+    )
 
     best_loss = float("inf")
     best_state = None
@@ -206,6 +225,8 @@ def main() -> None:
     out_path = os.path.join(cfg["paths"]["models_dir"], "encoder_fine.pt")
     save_encoder(model, out_path, card_ids=dataset.card_ids)
     print(f"[INFO] Feingetrimmtes Modell gespeichert unter {out_path}")
+    elapsed = time.time() - start_time
+    print(f"[TIME] fine-training abgeschlossen in {elapsed/60:.2f} min")
     print("[NEXT] Embeddings exportieren: python -m src.training.export_embeddings --config config.yaml")
 
 
