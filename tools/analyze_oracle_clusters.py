@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Dict, List, Tuple
 
 import numpy as np
+from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -82,7 +83,7 @@ def _resolve_thresholds(args: argparse.Namespace, cfg: dict) -> Tuple[float, flo
 def _compute_cluster_spreads(grouped: Dict[str, np.ndarray]) -> Tuple[Dict[str, Dict], float, float]:
     stats: Dict[str, Dict] = {}
     mean_values: List[float] = []
-    for oid, arr in grouped.items():
+    for oid, arr in tqdm(grouped.items(), total=len(grouped), desc="Spreads", unit="card"):
         if arr.size == 0:
             continue
         # L2-normalisieren (Sicherheitsnetz)
@@ -224,7 +225,7 @@ def main():
 
     # C) Metadaten-Konflikte
     rows: List[Dict] = []
-    for oid, arr in grouped.items():
+    for oid, arr in tqdm(grouped.items(), total=len(grouped), desc="Flags", unit="card"):
         s = stats.get(oid, {})
         intra_mean = float(s.get("intra_mean_dist", 0.0))
         intra_max = float(s.get("intra_max_dist", 0.0))

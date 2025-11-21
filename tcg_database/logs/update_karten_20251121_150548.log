@@ -1,0 +1,34 @@
+2025-11-21 15:05:48,310 - INFO - setup_logging:52 - Logging initialisiert. Log-Datei: tcg_database/logs\update_karten_20251121_150548.log
+2025-11-21 15:05:48,311 - INFO - main:424 - === SCRYFALL KARTENDATEN UPDATE GESTARTET ===
+2025-11-21 15:05:48,312 - INFO - main:425 - Datenbank-Pfad: tcg_database/database/karten.db
+2025-11-21 15:05:48,312 - INFO - main:426 - Bulk-Data-Verzeichnis: C:\Users\Fraens\Documents\Fraens\Youtube\TCG Sorter\CNN-Test\CardScannerCNN_02\data\scryfall_images\All Cards\bulk
+2025-11-21 15:05:48,312 - INFO - main:427 - Bilder-Ausgabe: C:\Users\Fraens\Documents\Fraens\Youtube\TCG Sorter\CNN-Test\CardScannerCNN_02\data\scryfall_images\All Cards
+2025-11-21 15:05:48,312 - INFO - main:428 - Sprachen: en,de
+2025-11-21 15:05:48,312 - INFO - main:429 - Bulk-Typen: unique_artwork
+2025-11-21 15:05:48,312 - INFO - main:430 - Force Download: False
+2025-11-21 15:05:48,312 - INFO - main:431 - Skip Download: False
+2025-11-21 15:05:48,312 - INFO - main:432 - Analyze JSON: False
+2025-11-21 15:05:48,312 - INFO - main:438 - --- Schritt 1: Bulk-Katalog abrufen ---
+2025-11-21 15:05:48,312 - INFO - get_bulk_catalog:58 - Rufe aktuelle Bulk-Data-Informationen von Scryfall ab...
+2025-11-21 15:05:48,734 - INFO - get_bulk_catalog:63 - Scryfall API erfolgreich kontaktiert. Status: 200
+2025-11-21 15:05:48,734 - INFO - main:446 - Bulk 'unique_artwork': https://data.scryfall.io/unique-artwork/unique-artwork-20251121100559.json (size: 240490824 bytes, updated: 2025-11-21T10:05:59.792+00:00)
+2025-11-21 15:05:48,735 - INFO - main:451 - --- Schritt 2: Bulk-JSON Download/Prüfung ---
+2025-11-21 15:05:48,735 - INFO - download_bulk_json:89 - Prüfe ob neue Version verfügbar ist...
+2025-11-21 15:05:48,735 - INFO - download_bulk_json:102 - Server-Dateiname: unique-artwork-20251121100559.json
+2025-11-21 15:05:48,735 - INFO - download_bulk_json:108 - Aktuelle Version bereits vorhanden: unique-artwork-20251121100559.json (229.3 MB)
+2025-11-21 15:05:48,735 - INFO - main:493 - --- Schritt 3: Bulk-Import in Datenbank ---
+2025-11-21 15:05:48,736 - INFO - load_cards_from_file:157 - Lese Karten aus C:\Users\Fraens\Documents\Fraens\Youtube\TCG Sorter\CNN-Test\CardScannerCNN_02\data\scryfall_images\All Cards\bulk\unique-artwork-20251121100559.json (streamweise verarbeitung für große Dateien)...
+2025-11-21 15:05:48,737 - INFO - load_cards_from_file:160 - Dateigröße: 229.3 MB
+2025-11-21 15:05:48,737 - INFO - load_cards_from_file:167 - Verwende normale JSON-Verarbeitung für kleinere Datei
+2025-11-21 15:05:50,570 - INFO - load_cards_from_file:174 - 50099 Karten geladen in 1.8 Sekunden.
+2025-11-21 15:05:50,570 - INFO - main:513 - UNIQUE Cards: 50099 Karten geladen
+2025-11-21 15:05:50,570 - INFO - main:517 - DB-Import übersprungen (--skip-db-import gesetzt)
+2025-11-21 15:05:50,600 - INFO - main:530 - Vorab-Schätzung: 49767 Bilder für Download (Sprachen: ['de', 'en'])
+2025-11-21 15:37:46,015 - INFO - main:587 - === SCRYFALL KARTENDATEN UPDATE ABGESCHLOSSEN ===
+2025-11-21 15:37:46,015 - INFO - main:588 - Gesamtdauer: 1917.7 Sekunden (32.0 Minuten)
+2025-11-21 15:37:46,015 - INFO - main:590 - Bulk JSON: unique-artwork-20251121100559.json
+2025-11-21 15:37:46,015 - INFO - main:591 - DB: tcg_database/database/karten.db
+2025-11-21 15:37:46,015 - INFO - main:593 - Karten importiert (alle Sprachen): 50099
+2025-11-21 15:37:46,015 - INFO - main:594 - Bilder heruntergeladen (EN/DE): 49767
+2025-11-21 15:37:46,016 - INFO - main:595 - Bildpfad: C:\Users\Fraens\Documents\Fraens\Youtube\TCG Sorter\CNN-Test\CardScannerCNN_02\data\scryfall_images\All Cards
+2025-11-21 15:37:46,016 - INFO - main:596 - Ordnerstruktur: <oracle_id>/<set>_<collector>_<lang>_<scryfall_id>.jpg

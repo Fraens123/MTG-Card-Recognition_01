@@ -2,6 +2,7 @@
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 import torch
 from torch import nn
 from torch.optim import Adam
@@ -43,6 +44,45 @@ def _compute_losses(logits: torch.Tensor, labels: torch.Tensor, criterion: nn.Mo
     return criterion(logits, labels)
 
 
+def _build_scheduler(optimizer: torch.optim.Optimizer, train_cfg: dict) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
+    sched_cfg = train_cfg.get("scheduler") or {}
+    sched_type = str(sched_cfg.get("type", "")).lower()
+    if sched_type != "warmup_cosine":
+        return None
+
+    total_epochs = int(train_cfg.get("epochs", 1))
+    warmup_epochs = max(0, int(sched_cfg.get("warmup_epochs", 1)))
+    if warmup_epochs >= total_epochs:
+        warmup_epochs = max(total_epochs - 1, 0)
+    cosine_epochs = max(total_epochs - warmup_epochs, 1)
+
+    start_factor = float(sched_cfg.get("warmup_start_factor", 0.1))
+    eta_min = float(sched_cfg.get("min_lr", 0.0))
+
+    warmup = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=start_factor,
+        total_iters=max(warmup_epochs, 1),
+    )
+    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=cosine_epochs,
+        eta_min=eta_min,
+    )
+    if warmup_epochs > 0:
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup, cosine],
+            milestones=[warmup_epochs],
+        )
+    else:
+        scheduler = cosine
+
+    base_lr = optimizer.param_groups[0]["lr"]
+    print(f"[SCHED] warmup_cosine: base_lr={base_lr} warmup_epochs={warmup_epochs} eta_min={eta_min}")
+    return scheduler
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
@@ -65,6 +105,7 @@ def main() -> None:
     model = build_encoder_model(cfg, num_classes=len(dataset.card_ids)).to(device)
     print(f"[MODEL] Backbone={cfg['encoder']['type']} | Klassen={len(dataset.card_ids)}")
     optimizer = Adam(model.parameters(), lr=float(train_cfg.get("lr", 1e-3)))
+    scheduler = _build_scheduler(optimizer, train_cfg)
     ce_loss = nn.CrossEntropyLoss()
 
     debug_root = cfg.get("paths", {}).get("debug_dir", "./debug")
@@ -77,6 +118,9 @@ def main() -> None:
     best_state = None
 
     epochs = int(train_cfg.get("epochs", 1))
+    if scheduler is not None:
+        # Prime scheduler to warmup start LR before first epoch.
+        scheduler.step()
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
@@ -101,7 +145,11 @@ def main() -> None:
         avg_acc = running_acc / len(dataloader)
         writer.add_scalar("loss/total", avg_loss, epoch)
         writer.add_scalar("metrics/accuracy", avg_acc, epoch)
-        print(f"[Epoch {epoch + 1}] total={avg_loss:.4f} acc={avg_acc:.4f}")
+        current_lr = optimizer.param_groups[0]["lr"]
+        writer.add_scalar("lr", current_lr, epoch)
+        print(f"[Epoch {epoch + 1}] total={avg_loss:.4f} acc={avg_acc:.4f} lr={current_lr:.6f}")
+        if scheduler is not None:
+            scheduler.step()
 
         if avg_loss < best_loss:
             best_loss = avg_loss

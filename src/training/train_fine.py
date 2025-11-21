@@ -2,6 +2,7 @@
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 import torch
 from torch import nn
 from torch.optim import Adam
@@ -64,6 +65,45 @@ def _compute_losses(
     return criterion(logits, labels)
 
 
+def _build_scheduler(optimizer: torch.optim.Optimizer, train_cfg: dict) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
+    sched_cfg = train_cfg.get("scheduler") or {}
+    sched_type = str(sched_cfg.get("type", "")).lower()
+    if sched_type != "warmup_cosine":
+        return None
+
+    total_epochs = int(train_cfg.get("epochs", 1))
+    warmup_epochs = max(0, int(sched_cfg.get("warmup_epochs", 1)))
+    if warmup_epochs >= total_epochs:
+        warmup_epochs = max(total_epochs - 1, 0)
+    cosine_epochs = max(total_epochs - warmup_epochs, 1)
+
+    start_factor = float(sched_cfg.get("warmup_start_factor", 0.1))
+    eta_min = float(sched_cfg.get("min_lr", 0.0))
+
+    warmup = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=start_factor,
+        total_iters=max(warmup_epochs, 1),
+    )
+    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=cosine_epochs,
+        eta_min=eta_min,
+    )
+    if warmup_epochs > 0:
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup, cosine],
+            milestones=[warmup_epochs],
+        )
+    else:
+        scheduler = cosine
+
+    base_lr = optimizer.param_groups[0]["lr"]
+    print(f"[SCHED] warmup_cosine: base_lr={base_lr} warmup_epochs={warmup_epochs} eta_min={eta_min}")
+    return scheduler
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
@@ -95,8 +135,11 @@ def main() -> None:
     _freeze_model(model, freeze_ratio)
 
     optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=float(train_cfg.get("lr", 1e-4)))
-    triplet_loss = nn.TripletMarginLoss(margin=float(train_cfg.get("margin", 0.35)), p=2)
+    scheduler = _build_scheduler(optimizer, train_cfg)
+    triplet_loss = nn.TripletMarginLoss(margin=float(train_cfg.get("margin", 0.5)), p=2)
     ce_loss = nn.CrossEntropyLoss()
+    triplet_weight = float(train_cfg.get("triplet_weight", 1.0))
+    ce_weight = float(train_cfg.get("ce_weight", 0.2))
 
     debug_root = cfg.get("paths", {}).get("debug_dir", "./debug")
     log_dir = os.path.join(debug_root, "logs", "fine")
@@ -108,6 +151,8 @@ def main() -> None:
     best_state = None
 
     epochs = int(train_cfg.get("epochs", 1))
+    if scheduler is not None:
+        scheduler.step()
     for epoch in range(epochs):
         model.train()
         running_triplet = 0.0
@@ -124,7 +169,7 @@ def main() -> None:
 
             loss_triplet = triplet_loss(anchor_emb, pos_emb, neg_emb)
             loss_ce_total = _compute_losses(anchor_logits, labels, ce_loss)
-            total_loss = loss_triplet + loss_ce_total
+            total_loss = triplet_weight * loss_triplet + ce_weight * loss_ce_total
             total_loss.backward()
             optimizer.step()
 
@@ -133,13 +178,19 @@ def main() -> None:
 
         avg_triplet = running_triplet / len(dataloader)
         avg_ce = running_ce / len(dataloader)
-        total = avg_triplet + avg_ce
+        total = triplet_weight * avg_triplet + ce_weight * avg_ce
 
         writer.add_scalar("loss/triplet", avg_triplet, epoch)
         writer.add_scalar("loss/ce", avg_ce, epoch)
         writer.add_scalar("loss/total", total, epoch)
-        print(f"[Epoch {epoch + 1}] total={total:.4f} triplet={avg_triplet:.4f} CE={avg_ce:.4f}")
-
+        current_lr = optimizer.param_groups[0]["lr"]
+        writer.add_scalar("lr", current_lr, epoch)
+        print(
+            f"[Epoch {epoch + 1}] total={total:.4f} triplet={avg_triplet:.4f} CE={avg_ce:.4f} "
+            f"w_triplet={triplet_weight} w_ce={ce_weight} lr={current_lr:.6f}"
+        )
+        if scheduler is not None:
+            scheduler.step()
         if total < best_loss:
             best_loss = total
             best_state = {k: v.cpu() for k, v in model.state_dict().items()}

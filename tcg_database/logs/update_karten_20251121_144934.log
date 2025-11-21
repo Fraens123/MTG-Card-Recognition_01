@@ -1,0 +1,45 @@
+2025-11-21 14:49:34,338 - INFO - setup_logging:52 - Logging initialisiert. Log-Datei: tcg_database/logs\update_karten_20251121_144934.log
+2025-11-21 14:49:34,339 - INFO - main:424 - === SCRYFALL KARTENDATEN UPDATE GESTARTET ===
+2025-11-21 14:49:34,339 - INFO - main:425 - Datenbank-Pfad: tcg_database/database/karten.db
+2025-11-21 14:49:34,340 - INFO - main:426 - Bulk-Data-Verzeichnis: C:\Users\Fraens\Documents\Fraens\Youtube\TCG Sorter\CNN-Test\CardScannerCNN_02\data\scryfall_images\All Cards\bulk
+2025-11-21 14:49:34,340 - INFO - main:427 - Bilder-Ausgabe: C:\Users\Fraens\Documents\Fraens\Youtube\TCG Sorter\CNN-Test\CardScannerCNN_02\data\scryfall_images\All Cards
+2025-11-21 14:49:34,340 - INFO - main:428 - Sprachen: en,de
+2025-11-21 14:49:34,340 - INFO - main:429 - Bulk-Typen: all_cards
+2025-11-21 14:49:34,340 - INFO - main:430 - Force Download: False
+2025-11-21 14:49:34,340 - INFO - main:431 - Skip Download: True
+2025-11-21 14:49:34,340 - INFO - main:432 - Analyze JSON: False
+2025-11-21 14:49:34,340 - INFO - main:438 - --- Schritt 1: Bulk-Katalog abrufen ---
+2025-11-21 14:49:34,340 - INFO - get_bulk_catalog:58 - Rufe aktuelle Bulk-Data-Informationen von Scryfall ab...
+2025-11-21 14:49:34,550 - INFO - get_bulk_catalog:63 - Scryfall API erfolgreich kontaktiert. Status: 200
+2025-11-21 14:49:34,551 - INFO - main:446 - Bulk 'all_cards': https://data.scryfall.io/all-cards/all-cards-20251121103015.json (size: 2440573260 bytes, updated: 2025-11-21T10:30:15.588+00:00)
+2025-11-21 14:49:34,551 - INFO - main:451 - --- Schritt 2: Bulk-JSON Download/Prüfung ---
+2025-11-21 14:49:34,552 - INFO - main:472 - Download übersprungen - verwende vorhandene Dateien nach Namensmuster.
+2025-11-21 14:49:34,553 - INFO - main:479 - Verwende vorhandene Datei für all_cards: all-cards-20251121103015.json
+2025-11-21 14:49:34,553 - INFO - main:493 - --- Schritt 3: Bulk-Import in Datenbank ---
+2025-11-21 14:49:34,556 - INFO - load_cards_from_file:157 - Lese Karten aus C:\Users\Fraens\Documents\Fraens\Youtube\TCG Sorter\CNN-Test\CardScannerCNN_02\data\scryfall_images\All Cards\bulk\all-cards-20251121103015.json (streamweise verarbeitung für große Dateien)...
+2025-11-21 14:49:34,556 - INFO - load_cards_from_file:160 - Dateigröße: 2327.5 MB
+2025-11-21 14:49:34,556 - INFO - load_cards_from_file:167 - Verwende normale JSON-Verarbeitung für kleinere Datei
+2025-11-21 14:49:53,421 - INFO - load_cards_from_file:174 - 517820 Karten geladen in 18.9 Sekunden.
+2025-11-21 14:49:53,422 - INFO - main:513 - ALL Cards: 517820 Karten geladen
+2025-11-21 14:49:53,422 - INFO - main:519 - Schreibe ALLE Karten in Datenbank (alle Sprachen, alle Metadaten)...
+2025-11-21 14:49:53,422 - INFO - upsert_cards:243 - Starte Datenbankoperationen mit 517820 Karten
+2025-11-21 14:49:53,422 - INFO - upsert_cards:244 - Datenbank-Pfad: tcg_database/database/karten.db
+2025-11-21 14:49:53,777 - INFO - upsert_cards:256 - Aktuelle Anzahl Karten in Datenbank: 412780
+2025-11-21 14:49:53,777 - INFO - upsert_cards:258 - Verarbeite 517820 Karten in Batches...
+2025-11-21 14:54:49,407 - INFO - upsert_cards:305 - === DATENBANKOPERATION ABGESCHLOSSEN ===
+2025-11-21 14:54:49,407 - INFO - upsert_cards:306 - Verarbeitete Karten: 517820
+2025-11-21 14:54:49,408 - INFO - upsert_cards:307 - Fehler: 0
+2025-11-21 14:54:49,408 - INFO - upsert_cards:308 - Karten in DB vorher: 412780
+2025-11-21 14:54:49,408 - INFO - upsert_cards:309 - Karten in DB nachher: 517820
+2025-11-21 14:54:49,408 - INFO - upsert_cards:310 - Neue/Aktualisierte Karten: 105040
+2025-11-21 14:54:49,408 - INFO - upsert_cards:311 - Gesamtdauer: 295.6 Sekunden
+2025-11-21 14:54:49,408 - INFO - upsert_cards:312 - Durchschnittsgeschwindigkeit: 1751.6 Karten/s
+2025-11-21 14:54:49,408 - INFO - main:524 - Bild-Download übersprungen (--no-download-images gesetzt)
+2025-11-21 14:54:49,408 - INFO - main:587 - === SCRYFALL KARTENDATEN UPDATE ABGESCHLOSSEN ===
+2025-11-21 14:54:49,408 - INFO - main:588 - Gesamtdauer: 315.1 Sekunden (5.3 Minuten)
+2025-11-21 14:54:49,408 - INFO - main:590 - Bulk JSON: all-cards-20251121103015.json
+2025-11-21 14:54:49,408 - INFO - main:591 - DB: tcg_database/database/karten.db
+2025-11-21 14:54:49,408 - INFO - main:593 - Karten importiert (alle Sprachen): 517820
+2025-11-21 14:54:49,409 - INFO - main:594 - Bilder heruntergeladen (EN/DE): 0
+2025-11-21 14:54:49,409 - INFO - main:595 - Bildpfad: C:\Users\Fraens\Documents\Fraens\Youtube\TCG Sorter\CNN-Test\CardScannerCNN_02\data\scryfall_images\All Cards
+2025-11-21 14:54:49,409 - INFO - main:596 - Ordnerstruktur: <oracle_id>/<set>_<collector>_<lang>_<scryfall_id>.jpg

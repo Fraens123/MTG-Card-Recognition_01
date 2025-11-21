@@ -36,7 +36,91 @@ python -m venv .venv
 pip install -r requirements.txt
 mkdir -p data/scryfall_images data/camera_images models output_matches
 ```
-Kartenbilder aus Scryfall nach `data/scryfall_images/`, Kameraaufnahmen nach `data/camera_images/` kopieren.
+
+### Scryfall-Daten herunterladen
+
+Das Projekt verwendet Scryfall Bulk-Daten. Standardmäßig wird **`all_cards`** verwendet, um **alle Karten in allen Sprachen** in die Datenbank zu laden, während Bilder nur für ausgewählte Sprachen heruntergeladen werden.
+
+#### Empfohlener Workflow:
+
+**Schritt 1: Datenbank mit ALLEN Karten befüllen (alle Sprachen)**
+```powershell
+# Download all_cards (~2.3 GB) und befülle DB mit allen Karten (alle Sprachen)
+# Dauer: ~5-10 Minuten, keine Bilder
+python tools/update_karten_from_scryfall.py --no-download-images
+```
+
+**Schritt 2: EN/DE Bilder downloaden**
+```powershell
+# Lade nur EN/DE Bilder herunter (nutzt vorhandene JSON, überspringt DB-Import)
+python tools/update_karten_from_scryfall.py --download-images --langs en,de --skip-download --skip-db-import
+```
+
+#### Weitere Szenarien:
+
+**Später weitere Sprachen ergänzen:**
+```powershell
+# Französische Bilder ergänzen (DB bleibt unverändert)
+python tools/update_karten_from_scryfall.py --download-images --langs fr --skip-download --skip-db-import
+
+# Japanische Bilder ergänzen
+python tools/update_karten_from_scryfall.py --download-images --langs ja --skip-download --skip-db-import
+
+# ALLE Sprachen als Bilder (Achtung: sehr viele Bilder!)
+python tools/update_karten_from_scryfall.py --download-images --langs "" --skip-download --skip-db-import
+```
+
+**Alternative Bulk-Typen:**
+```powershell
+# unique_artwork: Nur einzigartige Artworks (~50k Karten, keine Duplikate)
+python tools/update_karten_from_scryfall.py --bulk-types unique_artwork --no-download-images
+
+# default_cards: Jede Karte, nur EN/einzigartige Sprache (~540k Karten)
+python tools/update_karten_from_scryfall.py --bulk-types default_cards --no-download-images
+```
+
+**Monatliches Update:**
+```powershell
+# Erzwinge neuen Download und aktualisiere DB + Bilder
+python tools/update_karten_from_scryfall.py --force-download --langs en,de
+```
+
+#### Wichtige Flags:
+
+| Flag | Bedeutung | Wann verwenden? |
+|------|-----------|-----------------|
+| `--bulk-types all_cards` | Alle Karten, alle Sprachen | Standard (empfohlen) |
+| `--bulk-types unique_artwork` | Nur einzigartige Artworks | Weniger Duplikate für Training |
+| `--bulk-types default_cards` | Alle Prints, nur EN | Kompromiss zwischen all_cards und unique_artwork |
+| `--no-download-images` | Nur DB befüllen, keine Bilder | Erste Einrichtung, nur Metadaten |
+| `--download-images` | Bilder herunterladen | Standard: AN |
+| `--langs en,de` | Nur diese Sprachen | Spezifische Sprachen filtern (Standard: en,de) |
+| `--skip-download` | JSON nicht neu laden | JSON bereits vorhanden |
+| `--skip-db-import` | DB nicht neu befüllen | DB bereits komplett, nur Bilder ergänzen |
+| `--force-download` | Erzwingt neuen Download | Monatliches Update von Scryfall |
+
+#### Ordnerstruktur der Bilder:
+```
+data/scryfall_images/Unique Artwork/
+├── <oracle_id_1>/
+│   ├── WTH_123_en_<scryfall_id>.jpg
+│   ├── WTH_123_de_<scryfall_id>.jpg
+│   ├── EMA_456_en_<scryfall_id>.jpg
+│   └── ...
+├── <oracle_id_2>/
+│   └── ...
+```
+
+#### Datenbank-Schema:
+- **`karten` Tabelle**: Enthält **ALLE Karten** (alle Sprachen, alle Metadaten) - `scryfall_id` als Primärschlüssel
+- **`card_images` Tabelle**: Nur Bilder der mit `--langs` gefilterten Sprachen
+- **`card_embeddings` Tabelle**: Wird später beim Training befüllt
+
+**Erwartete Datenbankgröße bei all_cards:**
+- ~500.000-600.000 Karten (jede Karte in jeder verfügbaren Sprache)
+- EN: ~90.000+ | DE: ~90.000+ | FR: ~90.000+ | ES, IT, PT, JA, KO, RU, ZHS, ZHT, etc.
+
+Kameraaufnahmen können manuell nach `data/camera_images/` kopiert werden.
 
 ## Workflow
 1. **Coarse-Training** (reine CE-Verluste auf Scryfall-Daten):

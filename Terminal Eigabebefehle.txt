@@ -3,9 +3,11 @@ Export Embeddings:
 
 Runtime-Export (1 Zentroid pro Karte):
 python -m src.training.export_embeddings --config config.yaml --mode runtime
+python -m src.training.export_embeddings --config config.train5k.yaml --mode runtime
 
 Analyse-Export (alle Augs + Zentroid):
 python -m src.training.export_embeddings --config config.yaml --mode analysis
+python -m src.training.export_embeddings --config config.train5k.yaml --mode analysis
 
 ----------------------------------------------------------------------------------------
 Analyse Tools:
@@ -19,6 +21,9 @@ python -m tools.tsne_embeddings --config config.yaml --max-cards 500 --perplexit
 ----------------------------------------------------------------------------------------
 
 Trainingsdaten Tensorboard anzeigen:
+
+Trainingsdaten in Tensorboard: 
+python -m tensorboard.main --logdir .\debug\logs --port 6006
 
 Coarse Datenbank:
 python tools/launch_tensorboard.py --logdir debug/logs/coarse
@@ -44,5 +49,10 @@ python tools/visualization/export_embeddings_for_tensorboard.py `
   --mode runtime `
   --output-dir "debug/tensorboard_runtime" `
   --launch-tensorboard --tensorboard-port 6006
+
+----------------------------------------------------------------------------------------
+
+Analyze Oracle Cluster (setzt die Flags bei Überschneidungen, Zerstreute Cluster, Falsche Karte im Cluster):
+python tools\analyze_oracle_clusters.py --config config.train5k.yaml --mode analysis
 
 ----------------------------------------------------------------------------------------
