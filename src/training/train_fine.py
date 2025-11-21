@@ -132,27 +132,35 @@ def main() -> None:
     print(f"[MODEL] Init von {coarse_path} | Klassen={model.num_classes}")
 
     freeze_ratio = float(train_cfg.get("freeze_ratio", 0.6))
+    margin = float(train_cfg.get("margin", 0.35))
+    lr = float(train_cfg.get("lr", 1e-4))
+    # Freeze-Ratio aus Config
     _freeze_model(model, freeze_ratio)
 
-    optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=float(train_cfg.get("lr", 1e-4)))
+    optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
     scheduler = _build_scheduler(optimizer, train_cfg)
-    triplet_loss = nn.TripletMarginLoss(margin=float(train_cfg.get("margin", 0.5)), p=2)
+    # Margin aus Config in TripletLoss
+    triplet_loss = nn.TripletMarginLoss(margin=margin, p=2)
     ce_loss = nn.CrossEntropyLoss()
     triplet_weight = float(train_cfg.get("triplet_weight", 1.0))
-    ce_weight = float(train_cfg.get("ce_weight", 0.2))
+    ce_weight = float(train_cfg.get("ce_weight", 0.3))
 
     debug_root = cfg.get("paths", {}).get("debug_dir", "./debug")
     log_dir = os.path.join(debug_root, "logs", "fine")
     os.makedirs(log_dir, exist_ok=True)
     print(f"[LOG] TensorBoard unter {log_dir}")
     writer = SummaryWriter(log_dir=log_dir)
+    # Hyperparameter in TB loggen
+    writer.add_scalar("hp/freeze_ratio", freeze_ratio, 0)
+    writer.add_scalar("hp/margin", margin, 0)
+    writer.add_scalar("hp/lr", lr, 0)
+
+    print(f"[TRAIN] Fine-Tuning mit freeze_ratio={freeze_ratio:.2f}, margin={margin:.3f}, lr={lr}")
 
     best_loss = float("inf")
     best_state = None
 
     epochs = int(train_cfg.get("epochs", 1))
-    if scheduler is not None:
-        scheduler.step()
     for epoch in range(epochs):
         model.train()
         running_triplet = 0.0

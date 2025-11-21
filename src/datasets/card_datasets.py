@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import random
 from collections import OrderedDict
@@ -245,6 +246,16 @@ class TripletImageDataset(Dataset):
         # Triplet-Loader profitiert stark von gecachten PIL-Images (weniger I/O-Latenz).
         self.image_cache = LRUCache(max_size=cache_size)
 
+        # Hard-Negatives laden, falls konfiguriert
+        self.hard_negatives = None
+        hn_cfg = fine_cfg.get("hard_negatives", {})
+        if hn_cfg.get("enabled", False):
+            hn_file = hn_cfg.get("file")
+            if hn_file and os.path.exists(hn_file):
+                with open(hn_file, "r", encoding="utf-8") as f:
+                    self.hard_negatives = json.load(f)
+                print(f"[TripletDataset] Hard-Negatives aktiv: {len(self.hard_negatives)} Karten")
+
         self.camera_augmentor: Optional[CameraLikeAugmentor] = None
         self.camera_aug_repeats = max(1, int(round(augment_cfg.get("camera_like_strength", 1))))
         if augment_cfg.get("camera_like"):
@@ -291,11 +302,31 @@ class TripletImageDataset(Dataset):
         self.image_cache[path] = img.copy()
         return img
 
-    def _sample_negative_uuid(self, positive_uuid: str) -> str:
+    def _sample_negative_uuid_hard(self, anchor_uuid: str) -> Optional[str]:
+        """Gibt eine Hard-Negative-ID zurück, falls konfiguriert und vorhanden."""
+        if self.hard_negatives is None:
+            return None
+        candidates = self.hard_negatives.get(anchor_uuid)
+        if not candidates:
+            return None
+        valid = [c for c in candidates if c in self.card_to_paths]
+        if not valid:
+            return None
+        return random.choice(valid)
+
+    def _sample_negative_uuid_random(self, positive_uuid: str) -> str:
         neg_uuid = random.choice(self.card_ids)
         while neg_uuid == positive_uuid:
             neg_uuid = random.choice(self.card_ids)
         return neg_uuid
+
+    def _sample_negative_uuid(self, positive_uuid: str) -> str:
+        # zuerst harte Vorschläge testen
+        hard_candidate = self._sample_negative_uuid_hard(positive_uuid)
+        if hard_candidate is not None:
+            return hard_candidate
+        # sonst Random-Verhalten
+        return self._sample_negative_uuid_random(positive_uuid)
 
     def save_augmentations_of_first_card(self, output_dir: str, n_aug: int = 12) -> None:
         if not self.card_ids:
