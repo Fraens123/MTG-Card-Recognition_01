@@ -131,17 +131,18 @@ def _index_card_images(directory: Optional[str]) -> Dict[str, List[str]]:
     mapping: Dict[str, List[str]] = {}
     if not directory or not os.path.isdir(directory):
         return mapping
-    for name in os.listdir(directory):
-        path = os.path.join(directory, name)
-        if not os.path.isfile(path):
-            continue
-        if not name.lower().endswith(IMAGE_EXTENSIONS):
-            continue
-        meta = parse_scryfall_filename(name)
-        if not meta:
-            continue
-        card_uuid = meta[0]
-        mapping.setdefault(card_uuid, []).append(path)
+    for dirpath, _, filenames in os.walk(directory):
+        for name in filenames:
+            if not name.lower().endswith(IMAGE_EXTENSIONS):
+                continue
+            path = os.path.join(dirpath, name)
+            if not os.path.isfile(path):
+                continue
+            meta = parse_scryfall_filename(name)
+            if not meta:
+                continue
+            card_uuid = meta[0]
+            mapping.setdefault(card_uuid, []).append(path)
     return mapping
 
 

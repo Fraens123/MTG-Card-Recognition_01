@@ -89,10 +89,13 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
     train_cfg = get_training_config(cfg, "coarse")
+    batch_size = int(train_cfg.get("batch_size", 64))
+    epochs = int(train_cfg.get("epochs", 1))
     torch.backends.cudnn.benchmark = True  # erlaubt schnellere Conv-Kernel-Auswahl bei konstanten Input-Shapes
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Coarse-Training auf {device}")
+    print(f"[TRAIN] Coarse-Training 20k: epochs={epochs}, batch_size={batch_size}")
 
     dataset = CoarseDataset(cfg)
     print(f"[DATA] Karten={len(dataset.card_ids)} | Samples={len(dataset)}")
@@ -102,7 +105,7 @@ def main() -> None:
         dataset.save_augmentations_of_first_card(preview_dir)
 
     dataloader = _build_dataloader(dataset, train_cfg)
-    print(f"[LOAD] batch_size={train_cfg.get('batch_size')} | Schritte pro Epoche={len(dataloader)}")
+    print(f"[LOAD] batch_size={batch_size} | Schritte pro Epoche={len(dataloader)}")
 
     model = build_encoder_model(cfg, num_classes=len(dataset.card_ids)).to(device)
     print(f"[MODEL] Backbone={cfg['encoder']['type']} | Klassen={len(dataset.card_ids)}")
@@ -132,7 +135,6 @@ def main() -> None:
     best_loss = float("inf")
     best_state = None
 
-    epochs = int(train_cfg.get("epochs", 1))
     if scheduler is not None:
         # Prime scheduler to warmup start LR before first epoch.
         scheduler.step()

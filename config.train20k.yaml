@@ -1,0 +1,131 @@
+paths:
+  scryfall_dir: ./data/scryfall_images/subsets/train_20k_en_de
+  camera_dir: ./data/camera_images
+  models_dir: ./models
+  embeddings_dir: ./embeddings
+  output_dir: ./output_matches
+  debug_dir: ./debug
+
+images:
+  full_card_size: [224, 320]
+  full_crop:
+    x_min: 0.0
+    y_min: 0.0
+    x_max: 1.0
+    y_max: 1.0
+    keep_aspect: true
+
+encoder:
+  type: resnet18
+  emb_dim: 1024
+
+training:
+  coarse:
+    batch_size: 192
+    epochs: 30
+    lr: 0.0004
+    num_workers: 8
+    cache_images: false
+    cache_size: 3000
+    scheduler:
+      type: warmup_cosine
+      warmup_epochs: 2
+      warmup_start_factor: 0.2
+      min_lr: 5.0e-5
+    augment:
+      rotation_deg: 1
+      brightness: [0.9, 1.1]
+      contrast: [0.9, 1.1]
+      blur_prob: 0.1
+      noise_std: 0.02
+  fine:
+    batch_size: 128
+    epochs: 15
+    lr: 0.0001
+    margin: 0.4
+    freeze_ratio: 0.4
+    triplet_weight: 1.0
+    ce_weight: 0.3
+    num_workers: 8
+    cache_images: true
+    cache_size: 6000
+    use_camera_images: false
+    hard_negatives:
+      enabled: false
+      top_k: 20
+      file: "debug/hard_negatives_20k.json"
+    scheduler:
+      type: warmup_cosine
+      warmup_epochs: 2
+      warmup_start_factor: 0.2
+      min_lr: 2.0e-5
+    augment:
+      camera_like: true
+      rotation_deg: 2
+      brightness: [0.8, 1.2]
+      contrast: [0.85, 1.15]
+      blur_prob: 0.3
+      noise_std: 0.05
+      camera_like_strength: 1
+
+database:
+  sqlite_path: tcg_database/database/karten.db
+
+vector:
+  dimension: 1024
+
+model:
+  embed_dim: 1024
+
+hardware:
+  use_cuda: true
+
+embedding_export_runtime:
+  model_path: ./models/encoder_fine_20k.pt
+  use_augmentations: true
+  num_augmentations: 4
+  use_centroid: true
+  append_individual: false
+  append_centroid: false
+  export_batch_size: 64
+  num_workers: 4
+
+embedding_export_analysis:
+  model_path: ./models/encoder_fine_20k.pt
+  use_augmentations: true
+  num_augmentations: 2
+  use_centroid: false
+  append_individual: true
+  append_centroid: true
+  export_batch_size: 32
+  num_workers: 4
+
+analysis:
+  oracle_summary_file: "debug/oracle_cluster_summary_20k.json"
+
+pipeline:
+  scenario: full_no_hardneg
+  scenarios:
+    full_no_hardneg:
+      - coarse
+      - fine
+      - export_runtime_fine
+      - export_analysis_fine
+      - analyze_embeddings
+      - oracle_analysis_final
+    full:
+      - coarse
+      - export_analysis_coarse
+      - oracle_analysis_for_hardneg
+      - build_hard_negatives
+      - fine
+      - export_runtime_fine
+      - export_analysis_fine
+      - analyze_embeddings
+      - oracle_analysis_final
+    fast_debug:
+      - coarse
+      - fine
+      - export_runtime_fine
+    only_export_runtime:
+      - export_runtime_fine

@@ -1,7 +1,7 @@
 """
 Pipeline-Starter fuer Training/Analyse.
 
-Standard: config.train5k.yaml + Szenario "full".
+Standard: config.train20k.yaml + Szenario aus Config.
 Über --scenario laesst sich das YAML-Default ueberschreiben.
 """
 import argparse
@@ -27,8 +27,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=str,
-        default="config.train5k.yaml",  # Default explizit auf 5k-Config legen
-        help="Pfad zur YAML-Konfiguration (Default: config.train5k.yaml)",
+        default="config.train20k.yaml",  # Default explizit auf 20k-Config legen
+        help="Pfad zur YAML-Konfiguration (Default: config.train20k.yaml)",
     )
     parser.add_argument(
         "--scenario",
@@ -127,7 +127,7 @@ def run(cmd: List[str], description: str) -> None:
 
 def main() -> None:
     args = parse_args()
-    config_path = args.config or "config.train5k.yaml"
+    config_path = args.config or "config.train20k.yaml"
     cfg = load_config(config_path)
     pipeline_start = time.perf_counter()
 

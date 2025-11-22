@@ -145,9 +145,13 @@ def main() -> None:
     ce_loss = nn.CrossEntropyLoss()
     triplet_weight = float(train_cfg.get("triplet_weight", 1.0))
     ce_weight = float(train_cfg.get("ce_weight", 0.2))
+    epochs = int(train_cfg.get("epochs", 1))
 
     hard_neg_enabled = bool(train_cfg.get("hard_negatives", {}).get("enabled", False))
-    print(f"[TRAIN] Run 3A Fine-Tuning ohne HardNeg: freeze_ratio={freeze_ratio}, margin={margin}, lr={lr}")
+    print(
+        f"[TRAIN] Fine-Training 20k (ohne HardNeg): epochs={epochs}, batch_size={batch_size}, "
+        f"margin={margin}, freeze_ratio={freeze_ratio}"
+    )
 
     debug_root = cfg.get("paths", {}).get("debug_dir", "./debug")
     log_dir = os.path.join(debug_root, "logs", "fine")
@@ -178,7 +182,6 @@ def main() -> None:
     best_loss = float("inf")
     best_state = None
 
-    epochs = int(train_cfg.get("epochs", 1))
     if scheduler is not None:
         scheduler.step()
     for epoch in range(epochs):
@@ -230,9 +233,14 @@ def main() -> None:
     model.load_state_dict(best_state, strict=False)
     model.eval()
 
-    os.makedirs(cfg["paths"]["models_dir"], exist_ok=True)
-    out_path = os.path.join(cfg["paths"]["models_dir"], "encoder_fine.pt")
-    save_encoder(model, out_path, card_ids=dataset.card_ids)
+    models_dir = Path(cfg["paths"]["models_dir"])
+    models_dir.mkdir(parents=True, exist_ok=True)
+    fine_cfg = cfg.get("training", {}).get("fine", {}) if isinstance(cfg, dict) else {}
+    default_name = "encoder_fine.pt"
+    export_rt_name = Path(cfg.get("embedding_export_runtime", {}).get("model_path", default_name)).name
+    out_name = fine_cfg.get("model_filename") or export_rt_name or default_name
+    out_path = models_dir / out_name
+    save_encoder(model, str(out_path), card_ids=dataset.card_ids)
     print(f"[INFO] Feingetrimmtes Modell gespeichert unter {out_path}")
     elapsed = time.time() - start_time
     print(f"[TIME] fine-training abgeschlossen in {elapsed/60:.2f} min")
