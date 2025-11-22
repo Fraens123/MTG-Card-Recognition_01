@@ -40,19 +40,20 @@ training:
       noise_std: 0.02
   fine:
     batch_size: 128         # mehr GPU-Last
-    epochs: 20
-    lr: 0.0001              # konservativer
+    epochs: 15
+    lr: 0.00015             # konservativer
     margin: 0.4             # sanfter
     freeze_ratio: 0.4       # mehr Backbone trainieren
     triplet_weight: 1.0
     ce_weight: 0.3          # Klassifikator etwas höher
     num_workers: 8
-    cache_images: true
+    cache_images: false
     cache_size: 4000
     use_camera_images: false
     hard_negatives:
       enabled: true
       top_k: 20
+      spread_top_n: 20
       file: "debug/hard_negatives.json"
     scheduler:
       type: warmup_cosine
@@ -61,11 +62,11 @@ training:
       min_lr: 2.0e-5
     augment:
       camera_like: true
-      rotation_deg: 2
-      brightness: [0.8, 1.2]
+      rotation_deg: 1
+      brightness: [0.85, 1.15]
       contrast: [0.85, 1.15]
-      blur_prob: 0.3
-      noise_std: 0.05
+      blur_prob: 0.25
+      noise_std: 0.04
       camera_like_strength: 1
 
 database:
@@ -93,11 +94,11 @@ embedding_export_runtime:
 embedding_export_analysis:
   model_path: ./models/encoder_fine.pt
   use_augmentations: true
-  num_augmentations: 10
+  num_augmentations: 4
   use_centroid: false
   append_individual: true
   append_centroid: true
-  export_batch_size: 128
+  export_batch_size: 64
   num_workers: 8
 
 analysis:

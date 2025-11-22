@@ -110,6 +110,7 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
     train_cfg = get_training_config(cfg, "fine")
+    batch_size = int(train_cfg.get("batch_size", 32))
     torch.backends.cudnn.benchmark = True  # schnelleres Convolution-Tuning fuer stabile Input-Shapes
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -123,7 +124,7 @@ def main() -> None:
         print(f"[DEBUG] Schreibe Triplet-Augmentierungen nach {preview_dir}")
         dataset.save_augmentations_of_first_card(preview_dir)
     dataloader = _build_dataloader(dataset, train_cfg)
-    print(f"[LOAD] batch_size={train_cfg.get('batch_size')} | Schritte pro Epoche={len(dataloader)}")
+    print(f"[LOAD] batch_size={batch_size} | Schritte pro Epoche={len(dataloader)}")
 
     coarse_path = os.path.join(cfg["paths"]["models_dir"], "encoder_coarse.pt")
     if not os.path.exists(coarse_path):
@@ -145,11 +146,20 @@ def main() -> None:
     triplet_weight = float(train_cfg.get("triplet_weight", 1.0))
     ce_weight = float(train_cfg.get("ce_weight", 0.2))
 
+    print(
+        f"[TRAIN] Run 3B Fine-Tuning: freeze_ratio={freeze_ratio:.2f}, margin={margin:.3f}, "
+        f"lr={lr}, batch_size={batch_size}"
+    )
+
     debug_root = cfg.get("paths", {}).get("debug_dir", "./debug")
     log_dir = os.path.join(debug_root, "logs", "fine")
     os.makedirs(log_dir, exist_ok=True)
     print(f"[LOG] TensorBoard unter {log_dir}")
     writer = SummaryWriter(log_dir=log_dir)
+    writer.add_scalar("hp/freeze_ratio", freeze_ratio, 0)
+    writer.add_scalar("hp/margin", margin, 0)
+    writer.add_scalar("hp/lr", lr, 0)
+    writer.add_scalar("hp/batch_size", batch_size, 0)
 
     # Hyperparameter kurz loggen
     sched_cfg = train_cfg.get("scheduler", {})
