@@ -146,10 +146,8 @@ def main() -> None:
     triplet_weight = float(train_cfg.get("triplet_weight", 1.0))
     ce_weight = float(train_cfg.get("ce_weight", 0.2))
 
-    print(
-        f"[TRAIN] Run 3B Fine-Tuning: freeze_ratio={freeze_ratio:.2f}, margin={margin:.3f}, "
-        f"lr={lr}, batch_size={batch_size}"
-    )
+    hard_neg_enabled = bool(train_cfg.get("hard_negatives", {}).get("enabled", False))
+    print(f"[TRAIN] Run 3A Fine-Tuning ohne HardNeg: freeze_ratio={freeze_ratio}, margin={margin}, lr={lr}")
 
     debug_root = cfg.get("paths", {}).get("debug_dir", "./debug")
     log_dir = os.path.join(debug_root, "logs", "fine")
@@ -160,6 +158,7 @@ def main() -> None:
     writer.add_scalar("hp/margin", margin, 0)
     writer.add_scalar("hp/lr", lr, 0)
     writer.add_scalar("hp/batch_size", batch_size, 0)
+    writer.add_scalar("hp/hard_neg_enabled", int(hard_neg_enabled), 0)
 
     # Hyperparameter kurz loggen
     sched_cfg = train_cfg.get("scheduler", {})

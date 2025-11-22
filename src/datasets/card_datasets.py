@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import random
 from collections import OrderedDict
@@ -250,6 +251,30 @@ class TripletImageDataset(Dataset):
         if augment_cfg.get("camera_like"):
             self.camera_augmentor = CameraLikeAugmentor(**_map_camera_aug_params(augment_cfg))
 
+        hn_cfg = fine_cfg.get("hard_negatives", {})
+        self.hard_negatives: Optional[Dict[str, List[str]]] = None
+        if hn_cfg.get("enabled", False):
+            hn_file = hn_cfg.get("file")
+            if hn_file and os.path.isfile(hn_file):
+                try:
+                    with open(hn_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict):
+                        tmp = {str(k): [c for c in v if str(c) in self.card_to_paths] for k, v in data.items() if isinstance(v, list)}
+                        self.hard_negatives = {k: vals for k, vals in tmp.items() if vals}
+                        print(f"[TripletDataset] Hard-Negatives geladen ({len(self.hard_negatives)} Karten).")
+                    else:
+                        print(f"[TripletDataset] Hard-Negatives: unerwartetes Format in {hn_file}, ignoriere.")
+                        self.hard_negatives = None
+                except Exception as exc:
+                    print(f"[TripletDataset] Hard-Negatives konnten nicht geladen werden ({exc}); ignoriere.")
+                    self.hard_negatives = None
+            else:
+                print(f"[TripletDataset] Hard-Negatives aktiviert, Datei aber nicht gefunden: {hn_file}")
+        else:
+            self.hard_negatives = None
+            print("[TripletDataset] Run 3A: Hard-Negatives deaktiviert")
+
     def __len__(self) -> int:
         return max(self.max_triplets, 1)
 
@@ -292,6 +317,12 @@ class TripletImageDataset(Dataset):
         return img
 
     def _sample_negative_uuid(self, positive_uuid: str) -> str:
+        if self.hard_negatives is not None:
+            candidates = self.hard_negatives.get(positive_uuid) or []
+            if candidates:
+                neg_uuid = random.choice(candidates)
+                if neg_uuid != positive_uuid:
+                    return neg_uuid
         neg_uuid = random.choice(self.card_ids)
         while neg_uuid == positive_uuid:
             neg_uuid = random.choice(self.card_ids)
