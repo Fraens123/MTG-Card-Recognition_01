@@ -111,7 +111,8 @@ analysis:
 
 recognition:
   top_k: 5
-  threshold: 0.75
+  threshold: 0.6
+  use_ocr: false
 
 pipeline:
   scenario: full_no_hardneg

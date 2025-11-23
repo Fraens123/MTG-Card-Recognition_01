@@ -2,13 +2,16 @@
 Trainingspipline starten:
 
 python -m src.training.main --config config.train500.yaml
+python -m src.training.main --config config.train5k.yaml
+python -m src.training.main --config config.train20k.yaml
 
 ----------------------------------------------------------------------------------------
 
 
 Recognize:
 python -m src.recognize_cards --config config.train500.yaml
-
+python -m src.recognize_cards --config config.train5k.yaml
+python -m src.recognize_cards --config config.train20k.yaml
 
 ----------------------------------------------------------------------------------------
 
@@ -29,6 +32,8 @@ Analyse Tools:
 
 Analyse-Plot fahren:
 python -m tools.analyze_embeddings --config config.train500.yaml --mode analysis
+python -m tools.analyze_embeddings --config config.train5k.yaml --mode analysis
+python -m tools.analyze_embeddings --config config.train20k.yaml --mode analysis
 
 TSNE_Analyse:
 python -m tools.tsne_embeddings --config config.yaml --max-cards 500 --perplexity 30 --save debug/tsne_3d.png
@@ -73,3 +78,7 @@ python tools\analyze_oracle_clusters.py --config config.train500.yaml --mode ana
 
 ----------------------------------------------------------------------------------------
 
+Heatmap:
+python -m tools.heatmap_embeddings --config config.train20k.yaml
+
+----------------------------------------------------------------------------------------

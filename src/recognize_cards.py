@@ -480,6 +480,8 @@ def test_all_camera_images(
 
     print(f"[INFO] Gefunden: {len(camera_files)} Camera-Bilder")
     print(f"[INFO] Output-Verzeichnis: {output_dir}")
+    recognition_cfg = config.get("recognition", {})
+    use_ocr = bool(recognition_cfg.get("use_ocr", True))
 
     total_time = 0.0
     match_scores: List[float] = []
@@ -501,6 +503,7 @@ def test_all_camera_images(
                 config,
                 art_cfg,
                 None,
+                use_ocr=use_ocr,
             )
             total_time += search_time
             match_scores.append(float(similarity_score))

@@ -108,11 +108,21 @@ def main() -> None:
         default=None,
         help="Optionaler Ordner, in dem alle verwendeten Crops gespeichert werden.",
     )
+    parser.add_argument(
+        "--scryfall-dir",
+        type=str,
+        default=None,
+        help="Pfad zum Scryfall-Bilderordner (ueberschreibt config.paths.scryfall_dir). Z.B. ./data/scryfall_images/subsets/train_5k_en_de",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
     paths_cfg = config.get("paths", {})
-    scryfall_dir = Path(paths_cfg.get("scryfall_dir", "./data/scryfall_images"))
+    # Priorität: CLI --scryfall-dir > config.paths.scryfall_dir > Default
+    if args.scryfall_dir:
+        scryfall_dir = Path(args.scryfall_dir)
+    else:
+        scryfall_dir = Path(paths_cfg.get("scryfall_dir", "./data/scryfall_images"))
     camera_dir = Path(paths_cfg.get("camera_dir", "./data/camera_images"))
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -123,7 +133,25 @@ def main() -> None:
 
     scryfall_samples = pick_images(scryfall_dir, args.num_images)
     if not scryfall_samples:
-        raise SystemExit(f"Keine Scryfall-Bilder in {scryfall_dir} gefunden.")
+        # Versuche ggf. Unterordner 'subsets' autodetecten
+        subsets_dir = scryfall_dir / "subsets"
+        if subsets_dir.is_dir():
+            # Sammle erste passende Unterstruktur
+            candidate_dirs = [d for d in subsets_dir.iterdir() if d.is_dir()]
+            for cand in candidate_dirs:
+                alt_samples = pick_images(cand, args.num_images)
+                if alt_samples:
+                    print(f"[WARN] Keine Bilder direkt in {scryfall_dir} gefunden. Verwende Unterordner: {cand}")
+                    scryfall_dir = cand
+                    scryfall_samples = alt_samples
+                    break
+        if not scryfall_samples:
+            msg = (
+                f"Keine Scryfall-Bilder gefunden. Gepruefter Pfad: {scryfall_dir}\n"
+                f"Beispiel Aufruf: python -m tools.domain_tools.preview_camera_augmentations --config config.train5k.yaml --scryfall-dir ./data/scryfall_images/subsets/train_5k_en_de\n"
+                f"Oder pruefe, ob paths.scryfall_dir im Config korrekt ist."
+            )
+            raise SystemExit(msg)
     camera_refs = pick_images(camera_dir, args.camera_refs)
     ref_images = [Image.open(path).convert("RGB") for path in camera_refs]
     dump_dir = Path(args.dump_dir) if args.dump_dir else None

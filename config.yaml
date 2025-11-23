@@ -75,6 +75,7 @@ debug:
 recognition:
   top_k: 3
   threshold: 0.55
+  use_ocr: false
 
 database:
   sqlite_path: tcg_database/database/karten.db
