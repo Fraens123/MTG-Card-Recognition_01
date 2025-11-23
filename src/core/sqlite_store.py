@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS card_embeddings (
     oracle_id TEXT,
     image_id INTEGER,
     mode TEXT NOT NULL,
+    scenario TEXT NOT NULL DEFAULT 'default',
     aug_index INTEGER NOT NULL,
     emb BLOB NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -95,15 +96,21 @@ def _to_float(value: Any) -> Optional[float]:
 
 
 class SqliteEmbeddingStore:
-    def __init__(self, db_path: str, emb_dim: int):
+    def __init__(self, db_path: str, emb_dim: int, scenario: str = "default"):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.emb_dim = int(emb_dim)
+        self.scenario = scenario or "default"
         self.ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        # Timeout + busy_timeout, damit kurzzeitige Locks (z. B. durch parallele Leser) abgefangen werden.
+        conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA busy_timeout=5000")
+        except Exception:
+            pass
         return conn
 
     def ensure_schema(self) -> None:
@@ -114,6 +121,9 @@ class SqliteEmbeddingStore:
                 conn.execute("ALTER TABLE card_images ADD COLUMN oracle_id TEXT")
             if not _column_exists(conn, "card_embeddings", "oracle_id"):
                 conn.execute("ALTER TABLE card_embeddings ADD COLUMN oracle_id TEXT")
+            if not _column_exists(conn, "card_embeddings", "scenario"):
+                conn.execute("ALTER TABLE card_embeddings ADD COLUMN scenario TEXT NOT NULL DEFAULT 'default'")
+                conn.execute("UPDATE card_embeddings SET scenario='default' WHERE scenario IS NULL OR scenario=''")
             
             # WICHTIG: Unique-Index auf (scryfall_id, file_path), nicht (oracle_id, file_path)!
             # Jeder Print (scryfall_id) kann nur einmal mit demselben Dateipfad vorkommen.
@@ -122,6 +132,10 @@ class SqliteEmbeddingStore:
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_card_images_scryfall_file "
                 "ON card_images(scryfall_id, file_path)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_card_embeddings_mode_scenario "
+                "ON card_embeddings(mode, scenario)"
             )
             
             # Vorhandene Daten mit oracle_id aus karten befüllen.
@@ -243,7 +257,10 @@ class SqliteEmbeddingStore:
 
     def clear_embeddings(self, mode: str) -> None:
         with self._connect() as conn:
-            conn.execute("DELETE FROM card_embeddings WHERE mode = ?", (mode,))
+            conn.execute(
+                "DELETE FROM card_embeddings WHERE mode = ? AND scenario = ?",
+                (mode, self.scenario),
+            )
             conn.commit()
 
     def add_embedding(
@@ -263,12 +280,13 @@ class SqliteEmbeddingStore:
             "oracle_id": oracle_id or scryfall_id,
             "image_id": image_id,
             "mode": mode,
+            "scenario": self.scenario,
             "aug_index": int(aug_index),
             "emb": arr.astype(np.float32, copy=False).tobytes(),
         }
         sql = """
-        INSERT INTO card_embeddings (scryfall_id, oracle_id, image_id, mode, aug_index, emb)
-        VALUES (:scryfall_id, :oracle_id, :image_id, :mode, :aug_index, :emb)
+        INSERT INTO card_embeddings (scryfall_id, oracle_id, image_id, mode, scenario, aug_index, emb)
+        VALUES (:scryfall_id, :oracle_id, :image_id, :mode, :scenario, :aug_index, :emb)
         """
         with self._connect() as conn:
             cur = conn.execute(sql, payload)
@@ -310,6 +328,7 @@ def load_embeddings_with_meta(
     sqlite_path: str,
     mode: str,
     emb_dim: int,
+    scenario: str = "default",
 ) -> Tuple[Dict[str, List[np.ndarray]], Dict[str, Dict[str, Any]]]:
     """
     Laedt alle Embeddings aus card_embeddings fuer den gegebenen mode.
@@ -323,10 +342,21 @@ def load_embeddings_with_meta(
     """
     conn = sqlite3.connect(sqlite_path)
     conn.row_factory = sqlite3.Row
+    # Migration: scenario-Spalte sicherstellen
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(card_embeddings)").fetchall()]
+    if "scenario" not in cols:
+        conn.execute("ALTER TABLE card_embeddings ADD COLUMN scenario TEXT NOT NULL DEFAULT 'default'")
+        conn.execute("UPDATE card_embeddings SET scenario='default' WHERE scenario IS NULL OR scenario=''")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_card_embeddings_mode_scenario "
+        "ON card_embeddings(mode, scenario)"
+    )
+    conn.commit()
     query = """
     SELECT
         ce.scryfall_id,
         ce.oracle_id AS emb_oracle_id,
+        ce.scenario AS emb_scenario,
         ce.emb,
         ce.aug_index,
         ci.file_path AS image_path,
@@ -337,13 +367,13 @@ def load_embeddings_with_meta(
     FROM card_embeddings AS ce
     LEFT JOIN card_images AS ci ON ce.image_id = ci.id
     LEFT JOIN karten AS k ON ce.scryfall_id = k.id
-    WHERE ce.mode = ?
+    WHERE ce.mode = ? AND ce.scenario = ?
     ORDER BY ce.scryfall_id, ce.aug_index, ce.id
     """
     embeddings_by_card: Dict[str, List[np.ndarray]] = {}
     meta_by_card: Dict[str, Dict[str, Any]] = {}
     with conn:
-        for row in conn.execute(query, (mode,)):
+        for row in conn.execute(query, (mode, scenario)):
             # Primärschlüssel ist scryfall_id (Print-ID)
             scryfall_id = row["scryfall_id"]
             if scryfall_id is None:
@@ -365,8 +395,13 @@ def load_embeddings_with_meta(
                     # oracle_id wird als Metadatum gespeichert
                     if oracle_id:
                         meta["oracle_id"] = oracle_id
+                    meta["scenario"] = row["emb_scenario"] or scenario
                 else:
-                    meta = {"scryfall_id": scryfall_id, "oracle_id": oracle_id or scryfall_id}
+                    meta = {
+                        "scryfall_id": scryfall_id,
+                        "oracle_id": oracle_id or scryfall_id,
+                        "scenario": row["emb_scenario"] or scenario,
+                    }
                 meta.setdefault("image_paths", [])
                 meta_by_card[scryfall_id] = meta
             
@@ -405,8 +440,9 @@ def load_flat_samples(
     sqlite_path: str,
     mode: str,
     emb_dim: int,
+    scenario: str = "default",
 ) -> Tuple[np.ndarray, List[str], List[Dict[str, Any]]]:
-    embeddings_by_card, meta_by_card = load_embeddings_with_meta(sqlite_path, mode, emb_dim)
+    embeddings_by_card, meta_by_card = load_embeddings_with_meta(sqlite_path, mode, emb_dim, scenario=scenario)
     all_vectors: List[np.ndarray] = []
     labels: List[str] = []
     metas: List[Dict[str, Any]] = []

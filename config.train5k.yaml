@@ -21,9 +21,11 @@ encoder:
 
 training:
   coarse:
+    model_filename: encoder_coarse_5k.pt
     batch_size: 192
-    epochs: 40
-    lr: 0.0004
+    epochs: 35
+    lr: 0.00035
+    weight_decay: 0.0001
     num_workers: 8
     cache_images: false
     cache_size: 3000
@@ -40,7 +42,7 @@ training:
       noise_std: 0.02
   fine:
     batch_size: 128         # mehr GPU-Last
-    epochs: 20
+    epochs: 15
     lr: 0.0001              # konservativer
     margin: 0.4             # sanfter
     freeze_ratio: 0.4       # mehr Backbone trainieren
@@ -70,6 +72,8 @@ training:
 
 database:
   sqlite_path: tcg_database/database/karten.db
+  scenario: train5k
+  clear_all_embeddings: true
 
 vector:
   dimension: 1024
@@ -81,17 +85,19 @@ hardware:
   use_cuda: true
 
 embedding_export_runtime:
-  model_path: ./models/encoder_fine.pt
+  model_path: ./models/encoder_fine_5k.pt
+  model: "fine"
   use_augmentations: true
   num_augmentations: 10
   use_centroid: true
+  normalize: true
   append_individual: false
   append_centroid: false
   export_batch_size: 128
   num_workers: 8
 
 embedding_export_analysis:
-  model_path: ./models/encoder_fine.pt
+  model_path: ./models/encoder_fine_5k.pt
   use_augmentations: true
   num_augmentations: 4
   use_centroid: false
@@ -102,6 +108,10 @@ embedding_export_analysis:
 
 analysis:
   oracle_summary_file: "debug/oracle_cluster_summary.json"
+
+recognition:
+  top_k: 5
+  threshold: 0.75
 
 pipeline:
   scenario: full_no_hardneg

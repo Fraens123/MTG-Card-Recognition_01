@@ -43,6 +43,12 @@ def parse_args() -> argparse.Namespace:
         default="runtime",
         help="runtime: 1 Zentroid pro Karte, analysis: alle Augs + optional Zentroid",
     )
+    parser.add_argument(
+        "--scenario",
+        type=str,
+        default=None,
+        help="Optionaler Szenario-Name (falls nicht gesetzt: Wert aus config.database.scenario, sonst 'default')",
+    )
     return parser.parse_args()
 
 
@@ -212,6 +218,7 @@ def _get_oracle_id_from_db(store: SqliteEmbeddingStore, scryfall_id: str) -> Opt
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
+    scenario = args.scenario or cfg.get("database", {}).get("scenario") or "default"
     export_cfg, export_key = _select_export_cfg(cfg, args.mode)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -250,13 +257,13 @@ def main() -> None:
     # Streaming: wir schreiben Einzel-Embeddings sofort und akkumulieren nur Summen/Counts für Zentroiden
     sqlite_path = cfg.get("database", {}).get("sqlite_path", "tcg_database/database/karten.db")
     emb_dim = int(cfg.get("encoder", {}).get("emb_dim", cfg.get("model", {}).get("embed_dim", 1024)))
-    store = SqliteEmbeddingStore(sqlite_path, emb_dim=emb_dim)
+    store = SqliteEmbeddingStore(sqlite_path, emb_dim=emb_dim, scenario=scenario)
     store.clear_embeddings(args.mode)
     image_cache: Dict[Tuple[str, str], int] = {}
     oracle_cache: Dict[str, str] = {}
     aug_index_counter: Dict[str, int] = {}
     num_embeddings = 0
-    print(f"[STORE] Schreibe Embeddings nach {sqlite_path} (mode={args.mode})")
+    print(f"[STORE] Schreibe Embeddings nach {sqlite_path} (mode={args.mode}, scenario={scenario})")
 
     def _flush_pending():
         nonlocal pending, num_embeddings

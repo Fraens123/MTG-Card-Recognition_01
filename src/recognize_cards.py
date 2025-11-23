@@ -439,9 +439,11 @@ def test_all_camera_images(
     print(f"[INFO] Erkennung verwendet Modell: {model_path}")
 
     print("[INFO] Lade Embedding-Datenbank ...")
-    db_path = config.get("database", {}).get("sqlite_path", "tcg_database/database/karten.db")
-    db = SimpleCardDB(db_path=db_path, config_path=config_path)
-    print(f"[INFO] Erkennung verwendet Embedding-DB (SQLite): {db.db_path}")
+    db_cfg = config.get("database", {})
+    db_path = db_cfg.get("sqlite_path", "tcg_database/database/karten.db")
+    scenario = db_cfg.get("scenario", "default")
+    db = SimpleCardDB(db_path=db_path, config_path=config_path, scenario=scenario)
+    print(f"[INFO] Erkennung verwendet Embedding-DB (SQLite): {db.db_path} | Szenario: {scenario}")
     if len(db.cards) == 0:
         print("[WARN] Database ist leer. Bitte zuerst export_embeddings.py ausfuehren.")
         return
@@ -634,7 +636,16 @@ def main() -> None:
     try:
         config = load_config(args.config)
         paths_cfg = config.get("paths", {})
-        default_model_path = os.path.join(paths_cfg.get("models_dir", "./models"), "encoder_fine.pt")
+        
+        # Modell-Pfad aus embedding_export_runtime.model_path oder training.fine.model_filename
+        runtime_cfg = config.get("embedding_export_runtime", {})
+        if "model_path" in runtime_cfg:
+            default_model_path = runtime_cfg["model_path"]
+        else:
+            fine_cfg = config.get("training", {}).get("fine", {})
+            model_filename = fine_cfg.get("model_filename", "encoder_fine.pt")
+            default_model_path = os.path.join(paths_cfg.get("models_dir", "./models"), model_filename)
+        
         model_path = args.model_path or default_model_path
         camera_dir = args.camera_dir or paths_cfg.get("camera_dir", "./data/camera_images")
         output_dir = args.output_dir or paths_cfg.get("output_dir", "./output_matches")

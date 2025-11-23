@@ -35,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--config", type=str, default="config.yaml", help="Pfad zur YAML-Konfiguration")
     p.add_argument("--sqlite", type=str, default=None, help="Pfad zur SQLite-DB (ueberschreibt config.database.sqlite_path)")
     p.add_argument("--mode", type=str, default="analysis", choices=["analysis", "runtime"], help="Embedding-Mode")
+    p.add_argument("--scenario", type=str, default=None, help="Szenario-Name (Default aus config.database.scenario)")
     p.add_argument("--out-csv", type=str, default=None, help="Optionaler Pfad fuer CSV-Report")
     p.add_argument("--out-json", type=str, default=None, help="Optionaler Pfad fuer JSON-Top-Report")
     p.add_argument("--csv-delimiter", type=str, default=",", help="CSV-Delimiter (z. B. ';' fuer DE)")
@@ -158,11 +159,13 @@ def _cross_metadata_conflict(meta_a: Dict, meta_b: Dict) -> bool:
 def _upsert_quality(
     sqlite_path: Path,
     rows: List[Dict],
+    scenario: str,
 ) -> None:
     sql = (
         """
         INSERT INTO oracle_quality (
             oracle_id,
+            scenario,
             suspect_overlap,
             suspect_cluster_spread,
             suspect_metadata_conflict,
@@ -173,6 +176,7 @@ def _upsert_quality(
             meta_info
         ) VALUES (
             :oracle_id,
+            :scenario,
             :suspect_overlap,
             :suspect_cluster_spread,
             :suspect_metadata_conflict,
@@ -182,7 +186,7 @@ def _upsert_quality(
             :intra_max_dist,
             :meta_info
         )
-        ON CONFLICT(oracle_id) DO UPDATE SET
+        ON CONFLICT(oracle_id, scenario) DO UPDATE SET
             suspect_overlap = excluded.suspect_overlap,
             suspect_cluster_spread = excluded.suspect_cluster_spread,
             suspect_metadata_conflict = excluded.suspect_metadata_conflict,
@@ -193,7 +197,7 @@ def _upsert_quality(
             meta_info = excluded.meta_info
         """
     )
-    conn = sqlite3.connect(str(sqlite_path))
+    conn = sqlite3.connect(str(sqlite_path), timeout=30)
     try:
         with conn:
             conn.executemany(sql, rows)
@@ -208,10 +212,19 @@ def main():
         raise FileNotFoundError(f"SQLite-DB nicht gefunden: {sqlite_path}")
 
     ensure_oracle_quality_table(str(sqlite_path))
+    scenario = args.scenario or cfg.get("database", {}).get("scenario") or "default"
+    # Flags neu aufbauen: alte Eintraege verwerfen, damit keine Vermischung zwischen verschiedenen Subsets/Szenarien entsteht.
+    with sqlite3.connect(str(sqlite_path), timeout=30) as conn:
+        try:
+            conn.execute("PRAGMA busy_timeout=5000")
+        except Exception:
+            pass
+        conn.execute("DELETE FROM oracle_quality WHERE scenario = ?", (scenario,))
+    print("[INFO] oracle_quality geleert (kompletter Neuaufbau der Flags) fuer Szenario: " + str(scenario) + ".")
 
-    grouped, meta = load_embeddings_grouped_by_oracle(str(sqlite_path), args.mode, emb_dim)
+    grouped, meta = load_embeddings_grouped_by_oracle(str(sqlite_path), args.mode, emb_dim, scenario=scenario)
     if not grouped:
-        raise SystemExit("Keine Embeddings fuer den angegebenen mode gefunden.")
+        raise SystemExit("Keine Embeddings fuer den angegebenen mode und Szenario gefunden.")
 
     # Thresholds aus config (mit CLI-Override)
     spread_thr, overlap_thr = _resolve_thresholds(args, cfg)
@@ -264,12 +277,14 @@ def main():
                 "global_intra_mean": global_mean,
                 "global_intra_std": global_std,
                 "mode": args.mode,
+                "scenario": scenario,
             },
         }
 
         rows.append(
             {
                 "oracle_id": oid,
+                "scenario": scenario,
                 "suspect_overlap": int(suspect_overlap),
                 "suspect_cluster_spread": int(suspect_spread),
                 "suspect_metadata_conflict": int(meta_conflict),
@@ -339,7 +354,7 @@ def main():
                 )
 
     # Schreiben in oracle_quality (UPSERT)
-    _upsert_quality(sqlite_path, rows)
+    _upsert_quality(sqlite_path, rows, scenario=scenario)
     print(f"[OK] oracle_quality aktualisiert: {len(rows)} Eintraege.")
 
     # Optional/Default: CSV-Report
@@ -359,6 +374,7 @@ def main():
             writer.writerow(
                 [
                     "oracle_id",
+                    "scenario",
                     "name",
                     "set_code",
                     "set_name",
@@ -389,6 +405,7 @@ def main():
                 writer.writerow(
                     [
                         r["oracle_id"],
+                        r.get("scenario", scenario),
                         m.get("name") or "",
                         m.get("set_code") or "",
                         m.get("set_name") or "",

@@ -126,7 +126,8 @@ def main() -> None:
     dataloader = _build_dataloader(dataset, train_cfg)
     print(f"[LOAD] batch_size={batch_size} | Schritte pro Epoche={len(dataloader)}")
 
-    coarse_path = os.path.join(cfg["paths"]["models_dir"], "encoder_coarse.pt")
+    coarse_filename = cfg.get("training", {}).get("coarse", {}).get("model_filename", "encoder_coarse.pt")
+    coarse_path = os.path.join(cfg["paths"]["models_dir"], coarse_filename)
     if not os.path.exists(coarse_path):
         raise FileNotFoundError(f"Coarse-Checkpoint nicht gefunden: {coarse_path}")
 

@@ -86,13 +86,16 @@ def _load_suspects_from_summary(summary_path: Path, top_spread: int) -> Tuple[Se
     return overlap_ids, spread_top
 
 
-def _load_overlap_from_db(sqlite_path: Path) -> Set[str]:
+def _load_overlap_from_db(sqlite_path: Path, scenario: str) -> Set[str]:
     overlap_ids: Set[str] = set()
     if not sqlite_path.exists():
         return overlap_ids
     try:
         with sqlite3.connect(sqlite_path) as conn:
-            cur = conn.execute("SELECT oracle_id FROM oracle_quality WHERE suspect_overlap=1")
+            cur = conn.execute(
+                "SELECT oracle_id FROM oracle_quality WHERE suspect_overlap=1 AND scenario = ?",
+                (scenario,),
+            )
             for row in cur.fetchall():
                 if row[0]:
                     overlap_ids.add(str(row[0]))
@@ -101,7 +104,7 @@ def _load_overlap_from_db(sqlite_path: Path) -> Set[str]:
     return overlap_ids
 
 
-def _load_top_spread_from_db(sqlite_path: Path, top_spread: int) -> List[str]:
+def _load_top_spread_from_db(sqlite_path: Path, top_spread: int, scenario: str) -> List[str]:
     spread_ids: List[str] = []
     if not sqlite_path.exists() or top_spread <= 0:
         return spread_ids
@@ -111,11 +114,11 @@ def _load_top_spread_from_db(sqlite_path: Path, top_spread: int) -> List[str]:
                 """
                 SELECT oracle_id
                 FROM oracle_quality
-                WHERE suspect_cluster_spread=1
+                WHERE suspect_cluster_spread=1 AND scenario = ?
                 ORDER BY intra_mean_dist DESC
                 LIMIT ?
                 """,
-                (int(top_spread),),
+                (scenario, int(top_spread)),
             )
             for row in cur.fetchall():
                 if row[0]:
@@ -162,13 +165,14 @@ def main() -> None:
         top_spread = 20
 
     sqlite_path = Path(cfg.get("database", {}).get("sqlite_path", "tcg_database/database/karten.db"))
+    scenario = cfg.get("database", {}).get("scenario") or "default"
     emb_dim = int(cfg.get("encoder", {}).get("emb_dim", cfg.get("model", {}).get("embed_dim", 1024)))
 
     overlap_ids, spread_ids = _load_suspects_from_summary(summary_path, top_spread)
     if not overlap_ids:
-        overlap_ids = _load_overlap_from_db(sqlite_path)
+        overlap_ids = _load_overlap_from_db(sqlite_path, scenario=scenario)
     if not spread_ids:
-        spread_ids = _load_top_spread_from_db(sqlite_path, top_spread)
+        spread_ids = _load_top_spread_from_db(sqlite_path, top_spread, scenario=scenario)
 
     suspects = set(overlap_ids) | set(spread_ids)
     if not suspects:
@@ -178,7 +182,9 @@ def main() -> None:
         f"(N={top_spread}) -> Gesamt={len(suspects)} verdächtige Oracle-IDs."
     )
 
-    embeddings_by_card, meta_by_card = load_embeddings_with_meta(str(sqlite_path), mode="analysis", emb_dim=emb_dim)
+    embeddings_by_card, meta_by_card = load_embeddings_with_meta(
+        str(sqlite_path), mode="analysis", emb_dim=emb_dim, scenario=scenario
+    )
     if not embeddings_by_card:
         raise SystemExit("[HardNegatives] Keine Embeddings im mode=analysis gefunden.")
 

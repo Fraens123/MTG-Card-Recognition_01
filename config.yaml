@@ -78,6 +78,7 @@ recognition:
 
 database:
   sqlite_path: tcg_database/database/karten.db
+  scenario: full
 
 vector:
   dimension: 1024

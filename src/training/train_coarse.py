@@ -89,6 +89,7 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
     train_cfg = get_training_config(cfg, "coarse")
+    coarse_filename = train_cfg.get("model_filename", "encoder_coarse.pt")
     batch_size = int(train_cfg.get("batch_size", 64))
     epochs = int(train_cfg.get("epochs", 1))
     torch.backends.cudnn.benchmark = True  # erlaubt schnellere Conv-Kernel-Auswahl bei konstanten Input-Shapes
@@ -181,7 +182,7 @@ def main() -> None:
     model.eval()
 
     os.makedirs(cfg["paths"]["models_dir"], exist_ok=True)
-    out_path = os.path.join(cfg["paths"]["models_dir"], "encoder_coarse.pt")
+    out_path = os.path.join(cfg["paths"]["models_dir"], coarse_filename)
     save_encoder(model, out_path, card_ids=dataset.card_ids)
     print(f"[INFO] Bestes Modell gespeichert unter {out_path}")
     elapsed = time.time() - start_time

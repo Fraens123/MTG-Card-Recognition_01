@@ -27,7 +27,7 @@ from src.core.sqlite_embeddings import (
 
 # ---------- Common helpers ----------
 
-def _read_oracle_quality(sqlite_path: Path) -> List[Dict]:
+def _read_oracle_quality(sqlite_path: Path, scenario: str) -> List[Dict]:
     conn = sqlite3.connect(str(sqlite_path))
     conn.row_factory = sqlite3.Row
     rows: List[Dict] = []
@@ -35,6 +35,7 @@ def _read_oracle_quality(sqlite_path: Path) -> List[Dict]:
         for r in conn.execute(
             """
             SELECT oracle_id,
+                   scenario,
                    suspect_overlap,
                    suspect_cluster_spread,
                    suspect_metadata_conflict,
@@ -44,8 +45,10 @@ def _read_oracle_quality(sqlite_path: Path) -> List[Dict]:
                    intra_max_dist,
                    meta_info
             FROM oracle_quality
+            WHERE scenario = ?
             ORDER BY oracle_id
-            """
+            """,
+            (scenario,),
         ):
             d = dict(r)
             try:
@@ -58,9 +61,9 @@ def _read_oracle_quality(sqlite_path: Path) -> List[Dict]:
     return rows
 
 
-def _read_oracle_flags_map(sqlite_path: Path) -> Dict[str, Dict]:
+def _read_oracle_flags_map(sqlite_path: Path, scenario: str) -> Dict[str, Dict]:
     # map oracle_id -> row
-    rows = _read_oracle_quality(sqlite_path)
+    rows = _read_oracle_quality(sqlite_path, scenario)
     return {r["oracle_id"]: r for r in rows}
 
 
@@ -441,6 +444,7 @@ def main():
     ap.add_argument("--config", type=str, default="config.yaml")
     ap.add_argument("--sqlite", type=str, default=None)
     ap.add_argument("--mode", type=str, default="analysis", choices=["analysis","runtime"])
+    ap.add_argument("--scenario", type=str, default=None, help="Szenario-Name (Default aus config.database.scenario)")
     ap.add_argument("--view", type=str, default="both", choices=["cluster","scatter","both"], help="Welche Ansicht rendern")
 
     # Cluster options
@@ -466,6 +470,7 @@ def main():
     sqlite_path = Path(args.sqlite or cfg.get("database", {}).get("sqlite_path") or "tcg_database/database/karten.db")
     if not sqlite_path.exists():
         raise FileNotFoundError(f"SQLite-DB nicht gefunden: {sqlite_path}")
+    scenario = args.scenario or cfg.get("database", {}).get("scenario") or "default"
 
     ensure_oracle_quality_table(str(sqlite_path))
 
@@ -476,8 +481,8 @@ def main():
     )
 
     # Load metas and flags
-    grouped, meta = load_embeddings_grouped_by_oracle(str(sqlite_path), args.mode, emb_dim)
-    flags_map = _read_oracle_flags_map(sqlite_path)
+    grouped, meta = load_embeddings_grouped_by_oracle(str(sqlite_path), args.mode, emb_dim, scenario=scenario)
+    flags_map = _read_oracle_flags_map(sqlite_path, scenario)
 
     # Output defaults
     debug_dir = Path(cfg.get("paths", {}).get("debug_dir", "./debug"))
@@ -506,7 +511,7 @@ def main():
 
     # A) Cluster report
     if gen_cluster:
-        rows = _read_oracle_quality(sqlite_path)
+        rows = _read_oracle_quality(sqlite_path, scenario)
         produced_cluster = render_cluster_report(
             out_html=cluster_out,
             rows=rows,

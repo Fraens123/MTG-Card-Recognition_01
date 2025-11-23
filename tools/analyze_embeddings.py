@@ -113,7 +113,11 @@ def load_embeddings_and_config(
     if not db_path.exists():
         raise FileNotFoundError(f"Database nicht gefunden: {db_path}")
 
-    embeddings_by_card, meta_by_card = load_embeddings_with_meta(str(db_path), mode, emb_dim)
+    scenario = cfg.get("database", {}).get("scenario") or "default"
+
+    embeddings_by_card, meta_by_card = load_embeddings_with_meta(
+        str(db_path), mode, emb_dim, scenario=scenario
+    )
     cards: List[Dict] = []
     vectors: List[np.ndarray] = []
     for cid, vecs in embeddings_by_card.items():

@@ -21,20 +21,29 @@ class SimpleCardDB:
         db_path: Optional[str] = None,
         config_path: str = "config.yaml",
         mode: str = "runtime",
+        scenario: Optional[str] = None,
         emb_dim: Optional[int] = None,
         load_existing: bool = True,
     ):
+        cfg = None
         if db_path:
             self.db_path = Path(db_path)
         else:
             cfg = load_config(config_path)
             self.db_path = Path(cfg.get("database", {}).get("sqlite_path", "tcg_database/database/karten.db"))
             emb_dim = emb_dim or cfg.get("encoder", {}).get("emb_dim") or cfg.get("model", {}).get("embed_dim")
+        if cfg is None:
+            cfg = load_config(config_path)
+        self.scenario = scenario or cfg.get("database", {}).get("scenario") or "default"
         self.mode = mode
         self.emb_dim = int(emb_dim or 1024)
         self.cards: List[Dict[str, Any]] = []
         self.embeddings: Optional[np.ndarray] = None
-        self.meta: Dict[str, Any] = {"mode": self.mode, "sqlite_path": str(self.db_path)}
+        self.meta: Dict[str, Any] = {
+            "mode": self.mode,
+            "scenario": self.scenario,
+            "sqlite_path": str(self.db_path),
+        }
         self._oracle_index: Dict[str, List[int]] = {}  # Oracle-ID → Liste von Card-Indizes
         if load_existing:
             self.load_from_sqlite()
@@ -46,7 +55,9 @@ class SimpleCardDB:
             self.embeddings = None
             return
         # load_embeddings_with_meta gruppiert nach scryfall_id (nicht oracle_id!)
-        embeddings_by_card, meta_by_card = load_embeddings_with_meta(str(self.db_path), self.mode, self.emb_dim)
+        embeddings_by_card, meta_by_card = load_embeddings_with_meta(
+            str(self.db_path), self.mode, self.emb_dim, scenario=self.scenario
+        )
         cards: List[Dict[str, Any]] = []
         vectors: List[np.ndarray] = []
         for cid, vecs in embeddings_by_card.items():
@@ -59,6 +70,7 @@ class SimpleCardDB:
                 "collector_number": meta.get("collector_number") or "",
                 "image_path": (meta.get("image_paths") or [None])[0] or "",
                 "lang": meta.get("lang"),
+                "scenario": meta.get("scenario", self.scenario),
             }
             for vec in vecs:
                 cards.append(base.copy())

@@ -1,12 +1,13 @@
 
 Trainingspipline starten:
-python -m src.training.main
+
+python -m src.training.main --config config.train500.yaml
 
 ----------------------------------------------------------------------------------------
 
 
 Recognize:
-python -m src.recognize_cards --config config.train20k.yaml --model-path ./models/encoder_fine_20k_final.pt
+python -m src.recognize_cards --config config.train500.yaml
 
 
 ----------------------------------------------------------------------------------------
@@ -27,7 +28,7 @@ python -m src.training.export_embeddings --config config.train20k.yaml --mode an
 Analyse Tools:
 
 Analyse-Plot fahren:
-python -m tools.analyze_embeddings --config config.yaml --mode analysis
+python -m tools.analyze_embeddings --config config.train500.yaml --mode analysis
 
 TSNE_Analyse:
 python -m tools.tsne_embeddings --config config.yaml --max-cards 500 --perplexity 30 --save debug/tsne_3d.png
@@ -68,6 +69,7 @@ python tools/visualization/export_embeddings_for_tensorboard.py `
 
 Analyze Oracle Cluster (setzt die Flags bei Überschneidungen, Zerstreute Cluster, Falsche Karte im Cluster):
 python tools\analyze_oracle_clusters.py --config config.train5k.yaml --mode analysis
+python tools\analyze_oracle_clusters.py --config config.train500.yaml --mode analysis
 
 ----------------------------------------------------------------------------------------
 
