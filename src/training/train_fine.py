@@ -149,8 +149,8 @@ def main() -> None:
 
     hard_neg_enabled = bool(train_cfg.get("hard_negatives", {}).get("enabled", False))
     print(
-        f"[TRAIN] Fine-Training 20k (ohne HardNeg): epochs={epochs}, batch_size={batch_size}, "
-        f"margin={margin}, freeze_ratio={freeze_ratio}"
+        f"[TRAIN] Fine-Training 20k FINAL SHORT: epochs={epochs}, lr={lr}, batch_size={batch_size}, "
+        f"freeze_ratio={freeze_ratio}, margin={margin}"
     )
 
     debug_root = cfg.get("paths", {}).get("debug_dir", "./debug")

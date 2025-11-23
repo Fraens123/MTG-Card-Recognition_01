@@ -4,6 +4,13 @@ python -m src.training.main
 
 ----------------------------------------------------------------------------------------
 
+
+Recognize:
+python -m src.recognize_cards --config config.train20k.yaml --model-path ./models/encoder_fine_20k_final.pt
+
+
+----------------------------------------------------------------------------------------
+
 Export Embeddings:
 
 Runtime-Export (1 Zentroid pro Karte):
@@ -12,7 +19,9 @@ python -m src.training.export_embeddings --config config.train5k.yaml --mode run
 
 Analyse-Export (alle Augs + Zentroid):
 python -m src.training.export_embeddings --config config.yaml --mode analysis
-python -m src.training.export_embeddings --config config.train5k.yaml --mode analysis
+python -m src.training.export_embeddings --config config.train20k.yaml --mode analysis
+
+
 
 ----------------------------------------------------------------------------------------
 Analyse Tools:
@@ -61,3 +70,4 @@ Analyze Oracle Cluster (setzt die Flags bei Überschneidungen, Zerstreute Cluste
 python tools\analyze_oracle_clusters.py --config config.train5k.yaml --mode analysis
 
 ----------------------------------------------------------------------------------------
+

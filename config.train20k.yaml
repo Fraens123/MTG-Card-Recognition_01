@@ -40,8 +40,8 @@ training:
       noise_std: 0.02
   fine:
     batch_size: 128
-    epochs: 15
-    lr: 0.0001
+    epochs: 6
+    lr: 0.00012
     margin: 0.4
     freeze_ratio: 0.4
     triplet_weight: 1.0
@@ -81,7 +81,7 @@ hardware:
   use_cuda: true
 
 embedding_export_runtime:
-  model_path: ./models/encoder_fine_20k.pt
+  model_path: ./models/encoder_fine_20k_final.pt
   use_augmentations: true
   num_augmentations: 4
   use_centroid: true
@@ -91,7 +91,7 @@ embedding_export_runtime:
   num_workers: 4
 
 embedding_export_analysis:
-  model_path: ./models/encoder_fine_20k.pt
+  model_path: ./models/encoder_fine_20k_final.pt
   use_augmentations: true
   num_augmentations: 2
   use_centroid: false
@@ -104,8 +104,14 @@ analysis:
   oracle_summary_file: "debug/oracle_cluster_summary_20k.json"
 
 pipeline:
-  scenario: full_no_hardneg
+  scenario: final_20k_no_hardneg
   scenarios:
+    final_20k_no_hardneg:
+      - fine
+      - export_runtime_fine
+      - export_analysis_fine
+      - analyze_embeddings
+      - oracle_analysis_final
     full_no_hardneg:
       - coarse
       - fine
