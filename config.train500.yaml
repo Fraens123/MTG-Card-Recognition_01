@@ -85,14 +85,14 @@ training:
       saturation: [0.70, 1.20]
       hue_shift_deg: [-8, 8]
       color_temperature_range: [0.75, 1.25]
-      white_balance_shift: [-0.10, 0.10]
       gamma_range: [0.85, 1.15]
+      white_balance_shift: [-0.10, 0.10]
       rotation_deg: 4
       perspective: 0.10
       shadow: 0.30
+      noise_std: 0.02
       blur_prob: 0.25
       blur_radius: [0.5, 1.5]
-      noise_std: 0.02
       chromatic_aberration_px: 1.0
       vignette_strength: 0.25
 
