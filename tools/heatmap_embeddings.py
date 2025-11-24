@@ -23,6 +23,12 @@ from tools.analyze_embeddings import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Glide-Style Heatmap der Karten-Zentroiden.")
+    parser.add_argument(
+        "--mode",
+        choices=["runtime", "analysis"],
+        default="runtime",
+        help="Welchen Export-Modus aus der config laden (default: runtime).",
+    )
     parser.add_argument("--config", type=str, default="config.yaml", help="Pfad zur Konfigurationsdatei.")
     parser.add_argument(
         "--database",
@@ -92,8 +98,8 @@ def _sort_by_min_boundary(boundary: np.ndarray) -> List[int]:
 
 def main() -> None:
     args = parse_args()
-    db_path, cfg, cards, embeddings, _ = load_embeddings_and_config(args.config, args.database, mode="analysis")
-    print(f"[LOAD] Analysis-DB: {db_path}")
+    db_path, cfg, cards, embeddings, _ = load_embeddings_and_config(args.config, args.database, mode=args.mode)
+    print(f"[LOAD] {args.mode.capitalize()}-DB: {db_path}")
 
     # Norm absichern
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)

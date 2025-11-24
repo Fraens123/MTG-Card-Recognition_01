@@ -222,6 +222,8 @@ def render_cluster_report(
 # ---------- Scatter plot ----------
 
 def pca_2d(X: np.ndarray) -> np.ndarray:
+    if X.size == 0:
+        return np.zeros((0, 2), dtype=np.float32)
     Xc = X - X.mean(axis=0, keepdims=True)
     U, S, Vt = np.linalg.svd(Xc, full_matrices=False)
     Y = Xc @ Vt[:2].T
@@ -229,8 +231,13 @@ def pca_2d(X: np.ndarray) -> np.ndarray:
 
 
 def tsne_2d(X: np.ndarray, perplexity: float = 30.0, random_state: int = 0) -> np.ndarray:
+    n = X.shape[0]
+    if n == 0:
+        return np.zeros((0, 2), dtype=np.float32)
+    if n == 1:
+        return np.zeros((1, 2), dtype=np.float32)
     from sklearn.manifold import TSNE
-    ts = TSNE(n_components=2, perplexity=perplexity, init="pca", learning_rate="auto", random_state=random_state)
+    ts = TSNE(n_components=2, perplexity=min(perplexity, max(1.0, n - 1)), init="pca", learning_rate="auto", random_state=random_state)
     Y = ts.fit_transform(X)
     return Y.astype(np.float32)
 

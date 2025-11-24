@@ -75,10 +75,21 @@ python tools/visualization/export_embeddings_for_tensorboard.py `
 Analyze Oracle Cluster (setzt die Flags bei Überschneidungen, Zerstreute Cluster, Falsche Karte im Cluster):
 python tools\analyze_oracle_clusters.py --config config.train5k.yaml --mode analysis
 python tools\analyze_oracle_clusters.py --config config.train500.yaml --mode analysis
+python tools\analyze_oracle_clusters.py --config config.train20k.yaml --mode runtime
 
 ----------------------------------------------------------------------------------------
 
 Heatmap:
 python -m tools.heatmap_embeddings --config config.train20k.yaml
+python -m tools.heatmap_embeddings --config config.train20k.yaml --mode runtime --max-cards 0
 
 ----------------------------------------------------------------------------------------
+
+Viz Cluster:
+& ".\.venv\Scripts\python.exe" ".\tools\visualization\oracle_cluster_viz.py" --mode runtime
+
+
+----------------------------------------------------------------------------------------
+
+Consistency Tool (überprüft Scryfall bilder Augmentierungen:
+python tools/debug_embedding_consistency.py --config config.train20k.yaml --image "C:\Users\Fraens\Documents\Fraens\Youtube\TCG Sorter\CNN-Test\CardScannerCNN_02\data\scryfall_images\subsets\train_20k_en_de\2X2_42_en_2dc59566-10cb-468a-b6a2-17d6c0186e6d.jpg" --model models/encoder_fine_20k_final.pt

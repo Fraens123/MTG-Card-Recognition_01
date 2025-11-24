@@ -5,20 +5,29 @@ paths:
   embeddings_dir: ./embeddings
   output_dir: ./output_matches
   debug_dir: ./debug
-
 images:
-  full_card_size: [224, 320]
+  full_card_size:
+  - 224
+  - 320
   full_crop:
     x_min: 0.0
     y_min: 0.0
     x_max: 1.0
     y_max: 1.0
     keep_aspect: true
-
+camera:
+  card_roi:
+    x_min: 0.0
+    y_min: 0.0
+    x_max: 1.0
+    y_max: 1.0
+  debug_crops:
+    enabled: false
+    save_limit: 10
+    output_dir: ./debug/domain_preview
 encoder:
   type: resnet18
   emb_dim: 1024
-
 training:
   coarse:
     model_filename: encoder_coarse_20k.pt
@@ -32,11 +41,15 @@ training:
       type: warmup_cosine
       warmup_epochs: 2
       warmup_start_factor: 0.2
-      min_lr: 5.0e-5
+      min_lr: 5.0e-05
     augment:
       rotation_deg: 1
-      brightness: [0.9, 1.1]
-      contrast: [0.9, 1.1]
+      brightness:
+      - 0.9
+      - 1.1
+      contrast:
+      - 0.9
+      - 1.1
       blur_prob: 0.1
       noise_std: 0.02
   fine:
@@ -54,35 +67,42 @@ training:
     hard_negatives:
       enabled: false
       top_k: 20
-      file: "debug/hard_negatives_20k.json"
+      file: debug/hard_negatives_20k.json
     scheduler:
       type: warmup_cosine
       warmup_epochs: 2
       warmup_start_factor: 0.2
-      min_lr: 2.0e-5
+      min_lr: 2.0e-05
     augment:
       camera_like: true
-      rotation_deg: 3
-      brightness: [0.75, 1.25]
-      contrast: [0.75, 1.25]
-      blur_prob: 0.35
-      noise_std: 0.06
-      camera_like_strength: 2
+      # Pi-Cam (warm/gelb, leichte Verzerrung/Vignette) kalibrierte Werte:
+      camera_like_strength: 1.0
+      brightness: [0.85, 1.20]
+      contrast: [0.85, 1.20]
+      saturation: [0.70, 1.20]
+      hue_shift_deg: [-8, 8]
+      color_temperature_range: [0.75, 1.25]
+      white_balance_shift: [-0.10, 0.10]
+      gamma_range: [0.85, 1.15]
+      rotation_deg: 4
+      perspective: 0.10
+      shadow: 0.30
+      blur_prob: 0.25
+      blur_radius: [0.5, 1.5]
+      noise_std: 0.02
+      chromatic_aberration_px: 1.0
+      vignette_strength: 0.25
 
 database:
   sqlite_path: tcg_database/database/karten.db
   scenario: train20k
   clear_all_embeddings: true
-
 vector:
   dimension: 1024
-
 model:
   embed_dim: 1024
-
 hardware:
   use_cuda: true
-
 embedding_export_runtime:
   model_path: ./models/encoder_fine_20k_final.pt
   use_augmentations: true
@@ -92,7 +112,6 @@ embedding_export_runtime:
   append_centroid: false
   export_batch_size: 64
   num_workers: 4
-
 embedding_export_analysis:
   model_path: ./models/encoder_fine_20k_final.pt
   use_augmentations: true
@@ -102,44 +121,41 @@ embedding_export_analysis:
   append_centroid: true
   export_batch_size: 32
   num_workers: 4
-
 analysis:
-  oracle_summary_file: "debug/oracle_cluster_summary_20k.json"
-
+  oracle_summary_file: debug/oracle_cluster_summary_20k.json
 recognition:
   top_k: 5
   threshold: 0.5
   use_ocr: false
-
 pipeline:
   scenario: full_no_hardneg
   scenarios:
     final_20k_no_hardneg:
-      - fine
-      - export_runtime_fine
-      - export_analysis_fine
-      - analyze_embeddings
-      - oracle_analysis_final
+    - fine
+    - export_runtime_fine
+    - export_analysis_fine
+    - analyze_embeddings
+    - oracle_analysis_final
     full_no_hardneg:
-      - coarse
-      - fine
-      - export_runtime_fine
-      - export_analysis_fine
-      - analyze_embeddings
-      - oracle_analysis_final
+    - coarse
+    - fine
+    - export_runtime_fine
+    - export_analysis_fine
+    - analyze_embeddings
+    - oracle_analysis_final
     full:
-      - coarse
-      - export_analysis_coarse
-      - oracle_analysis_for_hardneg
-      - build_hard_negatives
-      - fine
-      - export_runtime_fine
-      - export_analysis_fine
-      - analyze_embeddings
-      - oracle_analysis_final
+    - coarse
+    - export_analysis_coarse
+    - oracle_analysis_for_hardneg
+    - build_hard_negatives
+    - fine
+    - export_runtime_fine
+    - export_analysis_fine
+    - analyze_embeddings
+    - oracle_analysis_final
     fast_debug:
-      - coarse
-      - fine
-      - export_runtime_fine
+    - coarse
+    - fine
+    - export_runtime_fine
     only_export_runtime:
-      - export_runtime_fine
+    - export_runtime_fine

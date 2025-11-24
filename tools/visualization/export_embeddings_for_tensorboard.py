@@ -67,6 +67,12 @@ def parse_args() -> argparse.Namespace:
         help="Embedding-Mode fuer die DB-Quelle (nur source=db).",
     )
     parser.add_argument(
+        "--scenario",
+        type=str,
+        default=None,
+        help="Szenario-Name; wenn nicht gesetzt, wird database.scenario aus der Config genutzt (Fallback: 'default').",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         help="Optional: Anzahl der Karten begrenzen (z.B. f\u00fcr schnelle Tests).",
@@ -326,6 +332,7 @@ def main():
     sqlite_cfg = config.get("database", {}).get("sqlite_path") or "tcg_database/database/karten.db"
     sqlite_path = resolve_path(args.database or sqlite_cfg, REPO_ROOT)
     emb_dim = int(config.get("encoder", {}).get("emb_dim") or config.get("model", {}).get("embed_dim", 1024))
+    scenario = args.scenario or config.get("database", {}).get("scenario") or "default"
 
     output_dir = resolve_path(args.output_dir, REPO_ROOT)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -333,9 +340,9 @@ def main():
     if args.source == "db":
         if not sqlite_path.exists():
             raise FileNotFoundError(f"SQLite-DB nicht gefunden: {sqlite_path}")
-        X, labels, metas = load_flat_samples(str(sqlite_path), args.mode, emb_dim)
+        X, labels, metas = load_flat_samples(str(sqlite_path), args.mode, emb_dim, scenario=scenario)
         cards = build_cards_from_samples(labels, metas)
-        print(f"[INFO] Lade {len(cards)} Datenbank-Eintraege aus {sqlite_path} (mode={args.mode})")
+        print(f"[INFO] Lade {len(cards)} DB-Eintraege aus {sqlite_path} (mode={args.mode}, scenario={scenario})")
         processed, skipped = export_db_embeddings(
             cards=cards,
             embeddings=X,

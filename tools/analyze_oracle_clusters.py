@@ -27,7 +27,7 @@ import sqlite3
 
 
 DEFAULT_SPREAD_MAX = 0.90
-DEFAULT_OVERLAP = 0.60
+DEFAULT_OVERLAP = 0.05
 
 
 def parse_args() -> argparse.Namespace:

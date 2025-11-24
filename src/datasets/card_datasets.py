@@ -342,17 +342,59 @@ class TripletImageDataset(Dataset):
 
 
 def _map_camera_aug_params(augment_cfg: Dict) -> Dict:
+    """
+    Legt fest, welche YAML-Keys in CameraLikeAugmentor landen.
+    Erwartete Felder:
+      - brightness/contrast/saturation: [min,max] -> *_range
+      - hue_shift_deg: [min,max]
+      - color_temperature_range: [min,max]
+      - white_balance_shift: [min,max]
+      - gamma_range: [min,max]
+      - noise_std: float -> noise_std_max (Std-Abweichung im [0,1]-Bereich)
+      - blur_prob: float Wahrscheinlichkeit (Radius wird im Augmentor skaliert)
+      - blur_radius: [min,max] -> Blur-Radius Range
+      - rotation_deg: float -> Maximalwinkel (Range wird im Augmentor skaliert)
+      - perspective: float -> perspektivische Verzerrung (linear skaliert)
+      - shadow: float -> Schattenintensit?t (linear skaliert)
+      - chromatic_aberration_px: float -> Kanal-Versatz
+      - vignette_strength: float -> Randabdunklung
+      - camera_like_strength: float [0,1] -> globaler Intensit?tsfaktor
+    """
     params: Dict = {}
     if "brightness" in augment_cfg:
         params["brightness_range"] = tuple(augment_cfg["brightness"])
     if "contrast" in augment_cfg:
         params["contrast_range"] = tuple(augment_cfg["contrast"])
+    if "saturation" in augment_cfg:
+        params["saturation_range"] = tuple(augment_cfg["saturation"])
+    if "color_temperature_range" in augment_cfg:
+        params["color_temperature_range"] = tuple(augment_cfg["color_temperature_range"])
+    if "white_balance_shift" in augment_cfg:
+        params["white_balance_shift"] = tuple(augment_cfg["white_balance_shift"])
+    if "gamma_range" in augment_cfg:
+        params["gamma_range"] = tuple(augment_cfg["gamma_range"])
+    if "hue_shift_deg" in augment_cfg:
+        params["hue_shift_deg"] = tuple(augment_cfg["hue_shift_deg"])
     if "noise_std" in augment_cfg:
         params["noise_std_max"] = float(augment_cfg["noise_std"])
-    if "rotation_deg" in augment_cfg:
-        params["tilt_deg_max"] = float(augment_cfg["rotation_deg"])
     if "blur_prob" in augment_cfg:
         params["blur_prob"] = float(augment_cfg["blur_prob"])
-    params.setdefault("noise_prob", 0.6)
-    params.setdefault("rotation_prob", 0.6)
+    if "blur_radius" in augment_cfg:
+        params["blur_radius"] = tuple(augment_cfg["blur_radius"])
+    if "rotation_deg" in augment_cfg:
+        params["rotation_deg"] = float(augment_cfg["rotation_deg"])
+    if "perspective" in augment_cfg:
+        params["perspective"] = float(augment_cfg["perspective"])
+    if "shadow" in augment_cfg:
+        params["shadow"] = float(augment_cfg["shadow"])
+    if "chromatic_aberration_px" in augment_cfg:
+        params["chromatic_aberration_px"] = float(augment_cfg["chromatic_aberration_px"])
+    if "vignette_strength" in augment_cfg:
+        params["vignette_strength"] = float(augment_cfg["vignette_strength"])
+    if "camera_like_strength" in augment_cfg:
+        params["camera_like_strength"] = float(augment_cfg["camera_like_strength"])
+
+    # Fallback-Wahrscheinlichkeiten bleiben konservativ, k?nnen aber ?ber params ?berschrieben werden.
+    params.setdefault("noise_prob", 0.35)
+    params.setdefault("rotation_prob", 0.65)
     return params

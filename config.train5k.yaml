@@ -15,6 +15,17 @@ images:
     y_max: 1.0
     keep_aspect: true
 
+camera:
+  card_roi:
+    x_min: 0.0
+    y_min: 0.0
+    x_max: 1.0
+    y_max: 1.0
+  debug_crops:
+    enabled: false
+    save_limit: 10
+    output_dir: ./debug/domain_preview
+
 encoder:
   type: resnet18
   emb_dim: 1024
@@ -63,12 +74,23 @@ training:
       min_lr: 2.0e-5
     augment:
       camera_like: true
-      rotation_deg: 2
-      brightness: [0.8, 1.2]
-      contrast: [0.85, 1.15]
-      blur_prob: 0.3
-      noise_std: 0.05
-      camera_like_strength: 1
+      # Pi-Cam (warm/gelb, leichte Verzerrung/Vignette) kalibrierte Werte:
+      camera_like_strength: 1.0
+      brightness: [0.85, 1.20]
+      contrast: [0.85, 1.20]
+      saturation: [0.70, 1.20]
+      hue_shift_deg: [-8, 8]
+      color_temperature_range: [0.75, 1.25]
+      white_balance_shift: [-0.10, 0.10]
+      gamma_range: [0.85, 1.15]
+      rotation_deg: 4
+      perspective: 0.10
+      shadow: 0.30
+      blur_prob: 0.25
+      blur_radius: [0.5, 1.5]
+      noise_std: 0.02
+      chromatic_aberration_px: 1.0
+      vignette_strength: 0.25
 
 database:
   sqlite_path: tcg_database/database/karten.db
