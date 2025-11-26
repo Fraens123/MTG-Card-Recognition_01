@@ -75,23 +75,17 @@ training:
       min_lr: 2.0e-05
     augment:
       camera_like: true
-      # Pi-Cam (warm/gelb, leichte Verzerrung/Vignette) kalibrierte Werte:
-      camera_like_strength: 1.0
-      brightness: [0.85, 1.20]
-      contrast: [0.85, 1.20]
-      saturation: [0.70, 1.20]
-      hue_shift_deg: [-8, 8]
-      color_temperature_range: [0.75, 1.25]
-      gamma_range: [0.85, 1.15]
-      white_balance_shift: [-0.10, 0.10]
-      rotation_deg: 4
-      perspective: 0.10
-      shadow: 0.30
+      camera_like_strength: 0.7
+      brightness: [0.90, 1.10]
+      contrast: [0.90, 1.15]
+      saturation: [0.85, 1.15]
+      color_temperature_range: [0.90, 1.10]
+      gamma_range: [0.95, 1.05]
+      rotation_deg: 2.0
+      perspective: 0.05
+      shadow: 0.15
+      blur_prob: 0.20
       noise_std: 0.02
-      blur_prob: 0.25
-      blur_radius: [0.5, 1.5]
-      chromatic_aberration_px: 1.0
-      vignette_strength: 0.25
 
 database:
   sqlite_path: tcg_database/database/karten.db
@@ -106,16 +100,30 @@ hardware:
 embedding_export_runtime:
   model_path: ./models/encoder_fine_20k_final.pt
   use_augmentations: true
-  num_augmentations: 2
-  use_centroid: false
-  append_individual: true
+  num_augmentations: 64
+  use_centroid: true
+  append_individual: false
   append_centroid: true
   export_batch_size: 64
   num_workers: 4
+camera_augmentor:
+  # Starke, optimierte Kamera-Augmentierungen NUR für Runtime-Export
+  camera_like: true
+  camera_like_strength: 1.0
+  brightness: [0.8226, 1.1478]
+  contrast: [0.9700, 1.3280]
+  saturation: [0.6441, 1.1688]
+  color_temperature_range: [0.8657, 1.0696]
+  gamma_range: [0.8852, 1.0745]
+  rotation_deg: 4.0181
+  perspective: 0.0879
+  shadow: 0.2199
+  blur_prob: 0.3116
+  noise_std: 0.0277
 embedding_export_analysis:
   model_path: ./models/encoder_fine_20k_final.pt
   use_augmentations: false
-  num_augmentations: 4
+  num_augmentations: 1
   use_centroid: false
   append_individual: true
   append_centroid: true
