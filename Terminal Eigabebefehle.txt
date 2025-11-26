@@ -20,6 +20,7 @@ Export Embeddings:
 Runtime-Export (1 Zentroid pro Karte):
 python -m src.training.export_embeddings --config config.yaml --mode runtime
 python -m src.training.export_embeddings --config config.train5k.yaml --mode runtime
+python -m src.training.export_embeddings --config config.train20k.yaml --mode runtime
 
 Analyse-Export (alle Augs + Zentroid):
 python -m src.training.export_embeddings --config config.yaml --mode analysis
@@ -91,5 +92,6 @@ Viz Cluster:
 
 ----------------------------------------------------------------------------------------
 
-Consistency Tool (überprüft Scryfall bilder Augmentierungen:
+Consistency Tool (vergleicht Training und Runtime Bilder)
 python tools/debug_embedding_consistency.py --config config.train20k.yaml --image "C:\Users\Fraens\Documents\Fraens\Youtube\TCG Sorter\CNN-Test\CardScannerCNN_02\data\scryfall_images\subsets\train_20k_en_de\2X2_42_en_2dc59566-10cb-468a-b6a2-17d6c0186e6d.jpg" --model models/encoder_fine_20k_final.pt
+

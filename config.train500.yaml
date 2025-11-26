@@ -78,23 +78,12 @@ training:
       min_lr: 2.0e-5
     augment:
       camera_like: true
-      # Pi-Cam (warm/gelb, leichte Verzerrung/Vignette) kalibrierte Werte:
-      camera_like_strength: 1.0
-      brightness: [0.85, 1.20]
-      contrast: [0.85, 1.20]
-      saturation: [0.70, 1.20]
-      hue_shift_deg: [-8, 8]
-      color_temperature_range: [0.75, 1.25]
-      gamma_range: [0.85, 1.15]
-      white_balance_shift: [-0.10, 0.10]
-      rotation_deg: 4
-      perspective: 0.10
-      shadow: 0.30
-      noise_std: 0.02
-      blur_prob: 0.25
-      blur_radius: [0.5, 1.5]
-      chromatic_aberration_px: 1.0
-      vignette_strength: 0.25
+      rotation_deg: 2
+      brightness: [0.8, 1.2]
+      contrast: [0.85, 1.15]
+      blur_prob: 0.3
+      noise_std: 0.05
+      camera_like_strength: 1
 
 database:
   sqlite_path: tcg_database/database/karten.db

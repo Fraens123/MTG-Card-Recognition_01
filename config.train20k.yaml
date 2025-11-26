@@ -54,7 +54,7 @@ training:
       noise_std: 0.02
   fine:
     batch_size: 128
-    epochs: 12
+    epochs: 6
     lr: 0.00012
     margin: 0.4
     freeze_ratio: 0.4
@@ -109,12 +109,12 @@ embedding_export_runtime:
   num_augmentations: 2
   use_centroid: false
   append_individual: true
-  append_centroid: false
+  append_centroid: true
   export_batch_size: 64
   num_workers: 4
 embedding_export_analysis:
   model_path: ./models/encoder_fine_20k_final.pt
-  use_augmentations: true
+  use_augmentations: false
   num_augmentations: 4
   use_centroid: false
   append_individual: true
@@ -128,7 +128,7 @@ recognition:
   threshold: 0.5
   use_ocr: false
 pipeline:
-  scenario: full_no_hardneg
+  scenario: final_20k_no_hardneg
   scenarios:
     final_20k_no_hardneg:
     - fine
