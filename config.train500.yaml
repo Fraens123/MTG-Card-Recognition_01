@@ -1,6 +1,6 @@
 paths:
-  scryfall_dir: ./data/scryfall_images/subsets/train_500_en_de
-  camera_dir: ./data/camera_images
+  scryfall_dir: ./data/scryfall_images/subsets/train_500_en_de_cam
+  camera_dir: ""
   models_dir: ./models
   embeddings_dir: ./embeddings
   output_dir: ./output_matches
@@ -50,11 +50,11 @@ training:
       warmup_start_factor: 0.2
       min_lr: 5.0e-5
     augment:
-      rotation_deg: 1
+      rotation_deg: 2
       brightness: [0.9, 1.1]
       contrast: [0.9, 1.1]
-      blur_prob: 0.1
-      noise_std: 0.02
+      blur_prob: 0.0
+      noise_std: 0.01
   fine:
     batch_size: 128
     epochs: 6
@@ -77,13 +77,18 @@ training:
       warmup_start_factor: 0.2
       min_lr: 2.0e-5
     augment:
-      camera_like: true
-      rotation_deg: 2
-      brightness: [0.8, 1.2]
-      contrast: [0.85, 1.15]
-      blur_prob: 0.3
-      noise_std: 0.05
-      camera_like_strength: 1
+      camera_like: false
+      camera_like_strength: 1.0
+      brightness: [0.7807, 1.2205]
+      contrast: [0.8872, 1.0125]
+      saturation: [0.7279, 1.3372]
+      color_temperature_range: [0.6258, 1.0831]
+      gamma_range: [0.9171, 0.9481]
+      rotation_deg: 2.68
+      perspective: 0.084
+      shadow: 0.269
+      noise_std: 0.0166
+      blur_prob: 0.108
 
 database:
   sqlite_path: tcg_database/database/karten.db

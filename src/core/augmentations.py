@@ -419,6 +419,78 @@ class CameraLikeAugmentor:
         return augmentations
 
 
+def generate_single_synthetic_camera_image(
+    input_dir: Path,
+    output_dir: Path,
+    num_limit: int | None = None,
+    fixed_seed: int | None = 1234,
+    **camera_params
+) -> None:
+    """
+    Erzeugt aus jedem Bild in input_dir genau EINE kameraähnliche Version
+    und speichert sie im output_dir unter demselben Dateinamen wie das Original.
+    Es wird die bestehende CameraLikeAugmentor-Klasse verwendet.
+    
+    Args:
+        input_dir: Eingabeverzeichnis mit Scryfall-Bildern
+        output_dir: Ausgabeverzeichnis für synthetische Bilder
+        num_limit: Optionale Begrenzung der Anzahl zu verarbeitender Bilder
+        fixed_seed: Seed für deterministische Augmentierungen (None = zufällig)
+        **camera_params: Parameter für CameraLikeAugmentor
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Augmentor erstellen
+    augmentor = CameraLikeAugmentor(**camera_params)
+    
+    # Alle Bilddateien finden
+    image_files = []
+    for ext in ['*.jpg', '*.jpeg', '*.png']:
+        image_files.extend(input_dir.glob(ext))
+    
+    if not image_files:
+        print(f"[ERROR] Keine Bilddateien gefunden in: {input_dir}")
+        return
+    
+    # Limit anwenden, falls gesetzt
+    if num_limit is not None and num_limit > 0:
+        image_files = image_files[:num_limit]
+    
+    print(f"[INFO] Erzeuge synthetische Kamerabilder für {len(image_files)} Dateien")
+    print(f"[INFO] Input: {input_dir}")
+    print(f"[INFO] Output: {output_dir}")
+    if fixed_seed is not None:
+        print(f"[INFO] Deterministischer Modus mit fixed_seed={fixed_seed}")
+    
+    processed = 0
+    for img_file in image_files:
+        try:
+            # Seed zurücksetzen für konsistente Augmentierungen über alle Bilder
+            if fixed_seed is not None:
+                random.seed(fixed_seed)
+                np.random.seed(fixed_seed)
+            
+            # Originalbild laden
+            original_img = Image.open(img_file).convert('RGB')
+            
+            # Genau EINE Augmentierung erstellen (Index 1 = erste augmentierte Version)
+            variations = augmentor.create_camera_like_augmentations(original_img, num_augmentations=1)
+            synthetic_img = variations[1]
+            
+            # Unter demselben Dateinamen speichern
+            output_file = output_dir / img_file.name
+            synthetic_img.save(output_file, 'JPEG', quality=85)
+            
+            processed += 1
+            if processed % 100 == 0:
+                print(f"   [INFO] {processed}/{len(image_files)} verarbeitet...")
+                
+        except Exception as e:
+            print(f"   [ERROR] Fehler bei {img_file.name}: {e}")
+    
+    print(f"[OK] {processed} synthetische Kamerabilder erstellt in {output_dir}")
+
+
 def main():
     """Hauptfunktion zum Augmentieren aller Scryfall-Bilder"""
     # Konfiguration laden
@@ -480,6 +552,10 @@ def main():
     parser.add_argument('--background_color', type=str, 
                         default=aug_config.get('background_color', 'white'),
                         help='Hintergrundfarbe: white oder black')
+    parser.add_argument('--single_synthetic', action='store_true',
+                        help='Erstellt pro Eingabebild genau EIN synthetisches Kamerabild (ohne Suffix)')
+    parser.add_argument('--num_limit', type=int, default=None,
+                        help='Begrenzt die Anzahl der zu verarbeitenden Bilder (nur für --single_synthetic)')
     
     args = parser.parse_args()
     
@@ -498,6 +574,12 @@ def main():
         'background_color': args.background_color,
     }
     
+    # Rotation im Single-Synthetic-Modus komplett deaktivieren
+    if args.single_synthetic:
+        camera_params['rotation_prob'] = 0.0
+        camera_params['rotation_base_deg'] = 0.0
+        camera_params['rotation_range'] = (0.0, 0.0)
+    
     # Verzeichnisse einrichten
     input_path = Path(args.input_dir)
     output_path = Path(args.output_dir)
@@ -506,6 +588,19 @@ def main():
         print(f"[ERROR] Input-Verzeichnis nicht gefunden: {input_path}")
         return
     
+    # === VERZWEIGUNG: Single Synthetic vs. Multiple Augmentations ===
+    if args.single_synthetic:
+        # Neuer Modus: Genau EIN synthetisches Bild pro Eingabebild
+        print("[MODE] Single Synthetic Camera Image Generation")
+        generate_single_synthetic_camera_image(
+            input_dir=input_path,
+            output_dir=output_path,
+            num_limit=args.num_limit,
+            **camera_params
+        )
+        return
+    
+    # === ORIGINAL-MODUS: Multiple Augmentations mit Suffixen ===
     output_path.mkdir(parents=True, exist_ok=True)
     
     # Scryfall-Bilder finden
