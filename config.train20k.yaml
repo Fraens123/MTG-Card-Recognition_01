@@ -1,5 +1,5 @@
 paths:
-  scryfall_dir: ./data/scryfall_images/subsets/train_20k_en_de
+  scryfall_dir: ./data/scryfall_images/subsets/train_20k_en_de_cam
   camera_dir: ./data/camera_images
   models_dir: ./models
   embeddings_dir: ./embeddings
@@ -74,18 +74,17 @@ training:
       warmup_start_factor: 0.2
       min_lr: 2.0e-05
     augment:
-      camera_like: true
-      camera_like_strength: 0.7
+      camera_like: false
       brightness: [0.90, 1.10]
-      contrast: [0.90, 1.15]
-      saturation: [0.85, 1.15]
-      color_temperature_range: [0.90, 1.10]
+      contrast: [0.90, 1.10]
+      saturation: [0.95, 1.05]
+      color_temperature_range: [0.95, 1.05]
       gamma_range: [0.95, 1.05]
-      rotation_deg: 2.0
-      perspective: 0.05
-      shadow: 0.15
-      blur_prob: 0.20
-      noise_std: 0.02
+      rotation_deg: 1.0
+      perspective: 0.0
+      shadow: 0.0
+      noise_std: 0.01
+      blur_prob: 0.05
 
 database:
   sqlite_path: tcg_database/database/karten.db
@@ -100,14 +99,15 @@ hardware:
 embedding_export_runtime:
   model_path: ./models/encoder_fine_20k_final.pt
   use_augmentations: true
-  num_augmentations: 4
+  num_augmentations: 2
   use_centroid: true
   append_individual: false
   append_centroid: false
   export_batch_size: 32
   num_workers: 2
 camera_augmentor:
-  # Starke, optimierte Kamera-Augmentierungen NUR für Runtime-Export
+  # Starke, optimierte Kamera-Augmentierungen NUR für Analysis-Export
+  enabled: true
   camera_like: true
   camera_like_strength: 1.0
   brightness: [0.8226, 1.1478]
@@ -133,7 +133,7 @@ analysis:
   oracle_summary_file: debug/oracle_cluster_summary_20k.json
 recognition:
   top_k: 5
-  threshold: 0.5
+  threshold: 0.2
   use_ocr: false
 pipeline:
   scenario: full_no_hardneg
