@@ -576,9 +576,17 @@ def main():
     
     # Rotation im Single-Synthetic-Modus komplett deaktivieren
     if args.single_synthetic:
+        # keine Geometrie-Augs im Offline-Synthetic
         camera_params['rotation_prob'] = 0.0
         camera_params['rotation_base_deg'] = 0.0
         camera_params['rotation_range'] = (0.0, 0.0)
+        camera_params['perspective'] = 0.0
+        camera_params['shadow'] = 0.0
+        # keine Blur/Noise im Basis-Synthetic
+        camera_params['blur_range'] = (0.0, 0.0)
+        camera_params['blur_prob'] = 0.0
+        camera_params['noise_range'] = (0, 0)
+        camera_params['noise_std_max'] = 0.0
     
     # Verzeichnisse einrichten
     input_path = Path(args.input_dir)

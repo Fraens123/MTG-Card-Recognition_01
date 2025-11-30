@@ -103,7 +103,7 @@ embedding_export_runtime:
   num_augmentations: 4
   use_centroid: true
   append_individual: false
-  append_centroid: true
+  append_centroid: false
   export_batch_size: 32
   num_workers: 2
 camera_augmentor:
@@ -122,9 +122,9 @@ camera_augmentor:
   noise_std: 0.0277
 embedding_export_analysis:
   model_path: ./models/encoder_fine_20k_final.pt
-  use_augmentations: false
-  num_augmentations: 1
-  use_centroid: true
+  use_augmentations: true
+  num_augmentations: 2
+  use_centroid: false
   append_individual: true
   append_centroid: true
   export_batch_size: 32
@@ -136,7 +136,7 @@ recognition:
   threshold: 0.5
   use_ocr: false
 pipeline:
-  scenario: final_20k_no_hardneg
+  scenario: full_no_hardneg
   scenarios:
     final_20k_no_hardneg:
     - fine

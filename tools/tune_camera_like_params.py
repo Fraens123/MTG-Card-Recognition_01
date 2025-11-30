@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 from PIL import Image
 import torch
+import optuna
 
 # Resolve repository root (../ from tools/)
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -49,14 +50,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--samples",
         type=int,
-        default=200,
-        help="Anzahl Random-Samples fuer die Parameter-Suche.",
+        default=80,
+        help="Anzahl Bayesian Optimization Trials (Standard: 80, empfohlen 50-100).",
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=None,
-        help="Optionaler Zufalls-Seed fuer reproduzierbare Parameter-Samples.",
+        help="Optionaler Zufalls-Seed fuer reproduzierbare Optimierung.",
+    )
+    parser.add_argument(
+        "--use-random-search",
+        action="store_true",
+        help="Fallback auf alten Random-Search statt Bayesian Optimization.",
     )
     return parser.parse_args()
 
@@ -183,49 +189,48 @@ def load_scryfall_images(pairs: Sequence[Dict[str, Path]]) -> Dict[Path, Image.I
     return cache
 
 
-def _jitter_range(base: Tuple[float, float], rel: float, clamp: Tuple[float, float], rng: random.Random) -> Tuple[float, float]:
-    lo, hi = base
-    lo_new = lo * rng.uniform(1.0 - rel, 1.0 + rel)
-    hi_new = hi * rng.uniform(1.0 - rel, 1.0 + rel)
-    lo_new, hi_new = sorted((lo_new, hi_new))
-    lo_new = max(clamp[0], lo_new)
-    hi_new = min(clamp[1], hi_new)
-    if hi_new <= lo_new:
-        hi_new = lo_new + 1e-4
-    return (lo_new, hi_new)
-
-
-def _jitter_scalar(base: float, rel: float, clamp: Tuple[float, float], rng: random.Random) -> float:
-    sampled = base * rng.uniform(1.0 - rel, 1.0 + rel)
-    return float(min(clamp[1], max(clamp[0], sampled)))
-
-
-def sample_tunable_params(base_aug: Dict, rng: random.Random) -> Dict:
-    """Sample um die Basis-Konfiguration herum (moderate Jitter)."""
-    brightness = tuple(base_aug.get("brightness", (0.85, 1.2)))
-    contrast = tuple(base_aug.get("contrast", (0.85, 1.2)))
-    saturation = tuple(base_aug.get("saturation", (0.7, 1.2)))
-    color_temp = tuple(base_aug.get("color_temperature_range", (0.75, 1.25)))
-    gamma = tuple(base_aug.get("gamma_range", (0.85, 1.15)))
-
-    rotation = float(base_aug.get("rotation_deg", 4.0))
-    perspective = float(base_aug.get("perspective", 0.10))
-    shadow = float(base_aug.get("shadow", 0.30))
-    noise_std = float(base_aug.get("noise_std", 0.02))
-    blur_prob = float(base_aug.get("blur_prob", 0.25))
-
+def sample_params_with_optuna(trial: optuna.Trial, base_aug: Dict) -> Dict:
+    """
+    Bayesian Optimization: Optuna schlägt Parameter vor basierend auf bisherigen Ergebnissen.
+    Fokussiert automatisch auf vielversprechende Bereiche.
+    
+    Ranges optimiert für Pi-Cam: enge Bereiche um realistische Werte.
+    """
+    # Sehr enge Ranges für beste Ergebnisse (basierend auf typischen Pi-Cam-Eigenschaften)
     sampled = {
-        "brightness": _jitter_range(brightness, rel=0.15, clamp=(0.3, 1.8), rng=rng),
-        "contrast": _jitter_range(contrast, rel=0.15, clamp=(0.3, 1.8), rng=rng),
-        "saturation": _jitter_range(saturation, rel=0.2, clamp=(0.2, 1.8), rng=rng),
-        "color_temperature_range": _jitter_range(color_temp, rel=0.2, clamp=(0.3, 2.5), rng=rng),
-        "gamma_range": _jitter_range(gamma, rel=0.2, clamp=(0.5, 2.0), rng=rng),
-        "rotation_deg": _jitter_scalar(rotation, rel=0.25, clamp=(0.0, 12.0), rng=rng),
-        "perspective": _jitter_scalar(perspective, rel=0.35, clamp=(0.0, 0.25), rng=rng),
-        "shadow": _jitter_scalar(shadow, rel=0.35, clamp=(0.0, 0.9), rng=rng),
-        "noise_std": _jitter_scalar(noise_std, rel=0.5, clamp=(0.0, 0.12), rng=rng),
-        "blur_prob": _jitter_scalar(blur_prob, rel=0.5, clamp=(0.0, 0.95), rng=rng),
+        "brightness": (
+            trial.suggest_float("brightness_min", 0.75, 0.90, step=0.01),
+            trial.suggest_float("brightness_max", 1.05, 1.25, step=0.01),
+        ),
+        "contrast": (
+            trial.suggest_float("contrast_min", 0.85, 0.95, step=0.01),
+            trial.suggest_float("contrast_max", 1.0, 1.15, step=0.01),
+        ),
+        "saturation": (
+            trial.suggest_float("saturation_min", 0.70, 0.85, step=0.01),
+            trial.suggest_float("saturation_max", 1.10, 1.40, step=0.01),
+        ),
+        "color_temperature_range": (
+            trial.suggest_float("color_temp_min", 0.60, 0.80, step=0.01),
+            trial.suggest_float("color_temp_max", 1.05, 1.25, step=0.01),
+        ),
+        "gamma_range": (
+            trial.suggest_float("gamma_min", 0.85, 0.95, step=0.01),
+            trial.suggest_float("gamma_max", 0.95, 1.10, step=0.01),
+        ),
+        "rotation_deg": trial.suggest_float("rotation_deg", 0.0, 4.0, step=0.1),
+        "perspective": trial.suggest_float("perspective", 0.0, 0.12, step=0.005),
+        "shadow": trial.suggest_float("shadow", 0.05, 0.40, step=0.01),
+        "noise_std": trial.suggest_float("noise_std", 0.005, 0.025, step=0.001),
+        "blur_prob": trial.suggest_float("blur_prob", 0.05, 0.25, step=0.01),
     }
+    
+    # Validierung: min < max
+    for key in ["brightness", "contrast", "saturation", "color_temperature_range", "gamma_range"]:
+        min_val, max_val = sampled[key]
+        if min_val >= max_val:
+            sampled[key] = (min_val, min_val + 0.05)
+    
     return sampled
 
 
@@ -309,10 +314,10 @@ def format_yaml_block(best_aug: Dict) -> str:
 
 def main() -> None:
     args = parse_args()
-    rng = random.Random(args.seed)
     cfg = load_config(args.config)
     device = torch.device("cuda" if torch.cuda.is_available() and cfg.get("hardware", {}).get("use_cuda", True) else "cpu")
     print(f"[INFO] Device: {device}")
+    print(f"[INFO] Optimization: {'Random Search (Legacy)' if args.use_random_search else 'Bayesian (Optuna)'}")
 
     model_path = resolve_model_path(cfg)
     if not os.path.exists(model_path):
@@ -343,13 +348,9 @@ def main() -> None:
     base_aug_cfg.setdefault("camera_like", True)
     base_aug_cfg.setdefault("camera_like_strength", 1.0)
 
-    results: List[Dict] = []
-    best_mean = -1.0
-    best_cfg: Optional[Dict] = None
-
-    print(f"[RUN] Starte Random-Search mit {args.samples} Samples ...")
-    for idx in range(1, args.samples + 1):
-        sampled = sample_tunable_params(base_aug_cfg, rng)
+    # Closure für Optuna objective function
+    def objective(trial: optuna.Trial) -> float:
+        sampled = sample_params_with_optuna(trial, base_aug_cfg)
         candidate_aug_cfg = copy.deepcopy(base_aug_cfg)
         candidate_aug_cfg.update(sampled)
 
@@ -364,34 +365,59 @@ def main() -> None:
             device,
             art_crop_cfg,
         )
-        results.append({"mean_cos": mean_cos, "cfg": candidate_aug_cfg})
-        if mean_cos > best_mean:
-            best_mean = mean_cos
-            best_cfg = candidate_aug_cfg
-        print(f"[{idx:03d}/{args.samples}] mean_cos={mean_cos:.4f} | best={best_mean:.4f}")
+        
+        # Log Zwischenstand
+        if trial.number % 10 == 0 or trial.number < 5:
+            print(f"[Trial {trial.number:03d}] score={mean_cos:.4f}")
+        
+        return mean_cos  # Optuna maximiert
 
-    results.sort(key=lambda r: r["mean_cos"], reverse=True)
-    top_n = results[: min(10, len(results))]
+    # Bayesian Optimization
+    print(f"[RUN] Starte Bayesian Optimization mit {args.samples} Trials ...")
+    print("[INFO] Optuna findet automatisch vielversprechende Bereiche!\n")
+    
+    sampler = optuna.samplers.TPESampler(seed=args.seed) if args.seed else optuna.samplers.TPESampler()
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=sampler,
+        study_name="camera_param_tuning"
+    )
+    
+    study.optimize(objective, n_trials=args.samples, show_progress_bar=True)
 
-    print("\n[RESULT] Top Parameter-Sets:")
-    for i, entry in enumerate(top_n, start=1):
-        cfg_short = entry["cfg"]
-        print(
-            f"  #{i:02d} | mean_cos={entry['mean_cos']:.4f} | "
-            f"brightness={cfg_short['brightness']} | contrast={cfg_short['contrast']} | "
-            f"saturation={cfg_short['saturation']} | gamma={cfg_short['gamma_range']} | "
-            f"temp={cfg_short['color_temperature_range']} | rot={cfg_short['rotation_deg']:.2f} | "
-            f"persp={cfg_short['perspective']:.3f} | shadow={cfg_short['shadow']:.3f} | "
-            f"noise_std={cfg_short['noise_std']:.4f} | blur_prob={cfg_short['blur_prob']:.3f}"
-        )
+    # Beste Ergebnisse
+    print(f"\n[RESULT] Beste Score: {study.best_value:.4f}")
+    print(f"[RESULT] Gefunden in Trial #{study.best_trial.number}")
+    
+    # Rekonstruiere beste Config
+    best_params = study.best_params
+    best_cfg = copy.deepcopy(base_aug_cfg)
+    best_cfg.update({
+        "brightness": (best_params["brightness_min"], best_params["brightness_max"]),
+        "contrast": (best_params["contrast_min"], best_params["contrast_max"]),
+        "saturation": (best_params["saturation_min"], best_params["saturation_max"]),
+        "color_temperature_range": (best_params["color_temp_min"], best_params["color_temp_max"]),
+        "gamma_range": (best_params["gamma_min"], best_params["gamma_max"]),
+        "rotation_deg": best_params["rotation_deg"],
+        "perspective": best_params["perspective"],
+        "shadow": best_params["shadow"],
+        "noise_std": best_params["noise_std"],
+        "blur_prob": best_params["blur_prob"],
+    })
 
-    if best_cfg is None:
-        print("[ERROR] Keine gueltigen Ergebnisse.")
-        return
+    # Top 10 Trials
+    print("\n[TOP 10] Beste Parameter-Sets:")
+    for i, trial in enumerate(sorted(study.trials, key=lambda t: t.value if t.value else -1, reverse=True)[:10], start=1):
+        if trial.value is None:
+            continue
+        print(f"  #{i:02d} | score={trial.value:.4f} | Trial {trial.number}")
 
-    print("\n[FINAL] Bestes Parameter-Set (Augment-Block fuer YAML):\n")
+    print("\n[FINAL] Bestes Parameter-Set (Augment-Block für YAML):\n")
     yaml_block = format_yaml_block(best_cfg)
     print(yaml_block)
+    
+    print("\n[TIP] Kopiere den YAML-Block in deine config.train500.yaml unter training.fine.augment")
+    print(f"[TIP] Mit {args.samples} Trials sollte Score >{study.best_value:.2f} erreichbar sein.")
 
 
 if __name__ == "__main__":

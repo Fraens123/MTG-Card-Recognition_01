@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+
+import requests
+from PIL import Image
+from io import BytesIO
+
+
+# Projektroot = Parent-Verzeichnis von tools (Hauptverzeichnis)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+PI_DIR = PROJECT_ROOT / "data" / "Bildanalyse" / "Pi Cam Bilder"
+SCRY_DIR = PROJECT_ROOT / "data" / "Bildanalyse" / "Skryfall Bilder"
+PAIRS_JSON = PROJECT_ROOT / "data" / "Bildanalyse" / "pairs.json"
+
+
+def parse_pi_filename(filename: str):
+    """
+    Erwartet z.B.:
+      BFZ_148_en_9e6da400-ee4e-44d1-887d-1e2fb59b9322_Makindi_Sliderunner_PiCam.png
+    -> set_code='BFZ', collector='148'
+    """
+    stem = Path(filename).stem
+    if stem.endswith("_PiCam"):
+        stem = stem[:-6]  # "_PiCam" entfernen
+    elif stem.endswith("_Pi_Cam"):
+        stem = stem[:-7]  # "_Pi_Cam" entfernen
+
+    parts = stem.split("_")
+    if len(parts) < 2:
+        raise ValueError(f"Konnte set/collector aus '{filename}' nicht parsen")
+
+    set_code = parts[0]
+    collector = parts[1]
+    return set_code, collector, stem  # stem wird später als Basis für Dateinamen benutzt
+
+
+def fetch_scryfall_image(set_code: str, collector: str) -> Image.Image:
+    """
+    Holt das 'normal' Bild von Scryfall über /cards/{set}/{collector}.
+    """
+    url = f"https://api.scryfall.com/cards/{set_code}/{collector}"
+    resp = requests.get(url, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+
+    # Normalfall: image_uris.normal
+    img_url = None
+
+    if "image_uris" in data and "normal" in data["image_uris"]:
+        img_url = data["image_uris"]["normal"]
+    elif "card_faces" in data and data["card_faces"]:
+        # DFC etc.: nimm erste Seite
+        faces = data["card_faces"]
+        if "image_uris" in faces[0] and "normal" in faces[0]["image_uris"]:
+            img_url = faces[0]["image_uris"]["normal"]
+
+    if not img_url:
+        raise RuntimeError(f"Kein 'normal'-Bild für {set_code}/{collector} gefunden")
+
+    img_resp = requests.get(img_url, timeout=30)
+    img_resp.raise_for_status()
+    return Image.open(BytesIO(img_resp.content)).convert("RGB")
+
+
+def main():
+    SCRY_DIR.mkdir(parents=True, exist_ok=True)
+    if not PI_DIR.is_dir():
+        raise SystemExit(f"Pi-Bilder Verzeichnis existiert nicht: {PI_DIR}")
+
+    pairs = []
+
+    for pi_path in sorted(PI_DIR.glob("*.png")):  # Geändert von *.jpg zu *.png
+        try:
+            set_code, collector, stem = parse_pi_filename(pi_path.name)
+            print(f"[INFO] Verarbeite {pi_path.name} -> {set_code}/{collector}")
+
+            # Scryfall-Bild laden
+            img = fetch_scryfall_image(set_code, collector)
+
+            # Als PNG speichern, Dateiname wie gewünscht
+            scry_name = f"{stem}.png"
+            scry_path = SCRY_DIR / scry_name
+            img.save(scry_path, format="PNG")
+
+            # Relativpfade für JSON (mit / statt \)
+            pi_rel = Path("data") / "Bildanalyse" / "Pi Cam Bilder" / pi_path.name
+            scry_rel = Path("data") / "Bildanalyse" / "Skryfall Bilder" / scry_name
+
+            pairs.append(
+                {
+                    "pi": pi_rel.as_posix(),
+                    "scry": scry_rel.as_posix(),
+                }
+            )
+
+        except Exception as e:
+            print(f"[WARN] Fehler bei {pi_path.name}: {e}")
+
+    # pairs.json schreiben
+    PAIRS_JSON.parent.mkdir(parents=True, exist_ok=True)
+    with PAIRS_JSON.open("w", encoding="utf-8") as f:
+        json.dump({"pairs": pairs}, f, indent=2, ensure_ascii=False)
+
+    print(f"[OK] {len(pairs)} Paare nach {PAIRS_JSON} geschrieben.")
+
+
+if __name__ == "__main__":
+    main()

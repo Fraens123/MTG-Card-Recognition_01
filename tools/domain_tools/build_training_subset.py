@@ -12,12 +12,12 @@ DB_PATH = PROJECT_ROOT / "tcg_database" / "database" / "karten.db"
 # Passe diesen Pfad bei Bedarf an.
 ALL_IMAGES_ROOT = PROJECT_ROOT / "data" / "scryfall_images"
 # Zielordner für das Subset
-SUBSET_DIR = PROJECT_ROOT / "data" / "scryfall_images" / "subsets" / "train_5k_en_de"
+SUBSET_DIR = PROJECT_ROOT / "data" / "scryfall_images" / "subsets" / "train_500_en_de"
 # CSV mit Pflichtkarten
 CSV_PATH = PROJECT_ROOT / "data" / "TCG Sorter.csv"
 
 LANGS = {"en", "de"}
-TOTAL_CARDS = 5000
+TOTAL_CARDS = 500
 RANDOM_SEED = 1337
 
 
@@ -138,10 +138,12 @@ def main():
     all_ids = list(available.keys())
     print(f"Verfügbare Karten (EN/DE): {len(all_ids)}")
 
-    # 1) Immer alle Pflichtkarten einplanen (falls verfügbar)
+    # Oracle-IDs tracken um Duplikate zu vermeiden
+    used_oracle_ids: Set[str] = set()
     selected: List[str] = []
     chosen_paths: Dict[str, str] = {}
 
+    # 1) Pflichtkarten einplanen (nur ein Print pro Oracle-ID)
     for sid in required_ids:
         paths = available.get(sid)
         if not paths:
@@ -153,10 +155,20 @@ def main():
         if not paths:
             print(f"WARN: Keine EN/DE-Bilder gefunden für Pflichtkarte {sid}")
             continue
+        
+        # Prüfe Oracle-ID
+        oid = get_oracle_id_for_print(DB_PATH, sid)
+        if oid in used_oracle_ids:
+            continue  # Dieser Kartenname ist bereits durch anderen Print abgedeckt
+        
         selected.append(sid)
         chosen_paths[sid] = pick_one_path(paths)
+        if oid:
+            used_oracle_ids.add(oid)
 
-    # 2) Rest zufällig auffüllen
+    print(f"Pflichtkarten (eindeutig): {len(selected)}")
+
+    # 2) Rest zufällig auffüllen (nur neue Oracle-IDs)
     remaining = TOTAL_CARDS - len(selected)
     if remaining <= 0:
         print(f"Pflichtkarten >= {TOTAL_CARDS}, kürze auf {TOTAL_CARDS}")
@@ -164,11 +176,22 @@ def main():
     else:
         pool = [sid for sid in all_ids if sid not in selected]
         random.shuffle(pool)
-        selected.extend(pool[:remaining])
-        for sid in pool[:remaining]:
+        
+        added = 0
+        for sid in pool:
+            if added >= remaining:
+                break
+            oid = get_oracle_id_for_print(DB_PATH, sid)
+            if oid in used_oracle_ids:
+                continue  # Dieser Kartenname ist bereits dabei
+            
+            selected.append(sid)
             chosen_paths[sid] = pick_one_path(available.get(sid, []))
+            if oid:
+                used_oracle_ids.add(oid)
+            added += 1
 
-    print(f"Ausgewählte Karten gesamt: {len(selected)}")
+    print(f"Ausgewählte Karten gesamt: {len(selected)} (eindeutige Oracle-IDs: {len(used_oracle_ids)})")
 
     # 3) Dateien verlinken/kopieren
     for sid in selected:
