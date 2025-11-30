@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Optional
 import torch
+import torch.backends.cudnn as cudnn
 from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader
@@ -111,9 +112,12 @@ def main() -> None:
     cfg = load_config(args.config)
     train_cfg = get_training_config(cfg, "fine")
     batch_size = int(train_cfg.get("batch_size", 32))
-    torch.backends.cudnn.benchmark = True  # schnelleres Convolution-Tuning fuer stabile Input-Shapes
+    cudnn.benchmark = True  # schnelleres Convolution-Tuning fuer stabile Input-Shapes
+    torch.set_float32_matmul_precision("medium")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_cuda = device.type == "cuda"
+    scaler = torch.cuda.amp.GradScaler(enabled=use_cuda)
     print(f"[INFO] Fine-Training auf {device}")
 
     dataset = TripletImageDataset(cfg)
@@ -183,27 +187,29 @@ def main() -> None:
     best_loss = float("inf")
     best_state = None
 
-    if scheduler is not None:
-        scheduler.step()
+    # Scheduler erst nach dem ersten Optimizer-Step bewegen, damit LR warmup passt.
     for epoch in range(epochs):
         model.train()
         running_triplet = 0.0
         running_ce = 0.0
         for batch in tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}"):
             anchor_full, pos_full, neg_full, labels = [b.to(device, non_blocking=True) for b in batch]
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
-            anchor_emb, anchor_logits = model(anchor_full, return_logits=True)
-            if anchor_logits is None:
-                raise RuntimeError("Classifier ist nicht konfiguriert (num_classes fehlt).")
-            pos_emb = model(pos_full)
-            neg_emb = model(neg_full)
+            with torch.cuda.amp.autocast(enabled=use_cuda):
+                anchor_emb, anchor_logits = model(anchor_full, return_logits=True)
+                if anchor_logits is None:
+                    raise RuntimeError("Classifier ist nicht konfiguriert (num_classes fehlt).")
+                pos_emb = model(pos_full)
+                neg_emb = model(neg_full)
 
-            loss_triplet = triplet_loss(anchor_emb, pos_emb, neg_emb)
-            loss_ce_total = _compute_losses(anchor_logits, labels, ce_loss)
-            total_loss = triplet_weight * loss_triplet + ce_weight * loss_ce_total
-            total_loss.backward()
-            optimizer.step()
+                loss_triplet = triplet_loss(anchor_emb, pos_emb, neg_emb)
+                loss_ce_total = _compute_losses(anchor_logits, labels, ce_loss)
+                total_loss = triplet_weight * loss_triplet + ce_weight * loss_ce_total
+
+            scaler.scale(total_loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             running_triplet += loss_triplet.item()
             running_ce += loss_ce_total.item()

@@ -1,5 +1,5 @@
 paths:
-  scryfall_dir: ./data/scryfall_images/subsets/train_20k_en_de_cam
+  scryfall_dir: ./data/scryfall_images/subsets/train_20k_en_de
   camera_dir: ./data/camera_images
   models_dir: ./models
   embeddings_dir: ./embeddings
@@ -9,34 +9,23 @@ images:
   full_card_size:
   - 224
   - 320
-  full_crop:
-    x_min: 0.0
-    y_min: 0.0
-    x_max: 1.0
-    y_max: 1.0
-    keep_aspect: true
 camera:
-  card_roi:
-    x_min: 0.0
-    y_min: 0.0
-    x_max: 1.0
-    y_max: 1.0
   debug_crops:
     enabled: false
     save_limit: 10
     output_dir: ./debug/domain_preview
 encoder:
-  type: resnet18
+  type: resnet50
   emb_dim: 1024
 training:
   coarse:
-    model_filename: encoder_coarse_20k.pt
-    batch_size: 192
-    epochs: 30
+    model_filename: encoder_coarse_20k_resnet50.pt
+    batch_size: 96
+    epochs: 10
     lr: 0.0004
-    num_workers: 4
-    cache_images: false
-    cache_size: 3000
+    num_workers: 8
+    cache_images: true
+    cache_size: 8000
     scheduler:
       type: warmup_cosine
       warmup_epochs: 2
@@ -53,7 +42,8 @@ training:
       blur_prob: 0.1
       noise_std: 0.02
   fine:
-    batch_size: 128
+    model_filename: encoder_fine_20k_resnet50.pt
+    batch_size: 32
     epochs: 6
     lr: 0.00012
     margin: 0.4
@@ -74,7 +64,8 @@ training:
       warmup_start_factor: 0.2
       min_lr: 2.0e-05
     augment:
-      camera_like: false
+      camera_like: true
+      camera_like_strength: 1.0
       brightness: [0.90, 1.10]
       contrast: [0.90, 1.10]
       saturation: [0.95, 1.05]
@@ -97,12 +88,12 @@ model:
 hardware:
   use_cuda: true
 embedding_export_runtime:
-  model_path: ./models/encoder_fine_20k_final.pt
-  use_augmentations: true
-  num_augmentations: 2
-  use_centroid: true
-  append_individual: false
-  append_centroid: false
+  model_path: ./models/encoder_fine_20k_resnet50.pt
+  use_augmentations: true     # wichtig!
+  num_augmentations: 2        # erstmal moderat lassen
+  use_centroid: true          # nur 1 Vektor pro Karte in DB
+  append_individual: false    # keine einzelnen Aug-Vektoren speichern
+  append_centroid: false      # Zentroid wird trotzdem gespeichert (use_centroid)
   export_batch_size: 32
   num_workers: 2
 camera_augmentor:
@@ -121,7 +112,7 @@ camera_augmentor:
   blur_prob: 0.3116
   noise_std: 0.0277
 embedding_export_analysis:
-  model_path: ./models/encoder_fine_20k_final.pt
+  model_path: ./models/encoder_fine_20k_resnet50.pt
   use_augmentations: true
   num_augmentations: 2
   use_centroid: false

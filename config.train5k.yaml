@@ -8,32 +8,21 @@ paths:
 
 images:
   full_card_size: [224, 320]
-  full_crop:
-    x_min: 0.0
-    y_min: 0.0
-    x_max: 1.0
-    y_max: 1.0
-    keep_aspect: true
 
 camera:
-  card_roi:
-    x_min: 0.0
-    y_min: 0.0
-    x_max: 1.0
-    y_max: 1.0
   debug_crops:
     enabled: false
     save_limit: 10
     output_dir: ./debug/domain_preview
 
 encoder:
-  type: resnet18
+  type: resnet50
   emb_dim: 1024
 
 training:
   coarse:
-    model_filename: encoder_coarse_5k.pt
-    batch_size: 192
+    model_filename: encoder_coarse_5k_resnet50.pt
+    batch_size: 128
     epochs: 35
     lr: 0.00035
     weight_decay: 0.0001
@@ -52,7 +41,8 @@ training:
       blur_prob: 0.1
       noise_std: 0.02
   fine:
-    batch_size: 128         # mehr GPU-Last
+    model_filename: encoder_fine_5k_resnet50.pt
+    batch_size: 96         # mehr GPU-Last
     epochs: 15
     lr: 0.0001              # konservativer
     margin: 0.4             # sanfter
@@ -107,7 +97,7 @@ hardware:
   use_cuda: true
 
 embedding_export_runtime:
-  model_path: ./models/encoder_fine_5k.pt
+  model_path: ./models/encoder_fine_5k_resnet50.pt
   model: "fine"
   use_augmentations: true
   num_augmentations: 10
@@ -119,7 +109,7 @@ embedding_export_runtime:
   num_workers: 8
 
 embedding_export_analysis:
-  model_path: ./models/encoder_fine_5k.pt
+  model_path: ./models/encoder_fine_5k_resnet50.pt
   use_augmentations: true
   num_augmentations: 4
   use_centroid: false

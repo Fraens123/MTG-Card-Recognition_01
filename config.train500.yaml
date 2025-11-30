@@ -1,5 +1,5 @@
 paths:
-  scryfall_dir: ./data/scryfall_images/subsets/train_500_en_de_cam
+  scryfall_dir: ./data/scryfall_images/subsets/train_500_en_de
   camera_dir: ./data/camera_images
   models_dir: ./models
   embeddings_dir: ./embeddings
@@ -8,19 +8,7 @@ paths:
 
 images:
   full_card_size: [224, 320]
-  full_crop:
-    x_min: 0.0
-    y_min: 0.0
-    x_max: 1.0
-    y_max: 1.0
-    keep_aspect: true
-
 camera:
-  card_roi:
-    x_min: 0.0
-    y_min: 0.0
-    x_max: 1.0
-    y_max: 1.0
   debug_crops:
     enabled: false
     save_limit: 10
@@ -32,12 +20,12 @@ recognition:
   use_ocr: false
 
 encoder:
-  type: resnet18
+  type: resnet50
   emb_dim: 1024
 
 training:
   coarse:
-    model_filename: encoder_coarse_500.pt
+    model_filename: encoder_coarse_500_resnet50.pt
     batch_size: 128
     epochs: 50
     lr: 0.00035
@@ -56,7 +44,8 @@ training:
       blur_prob: 0.05
       noise_std: 0.01
   fine:
-    batch_size: 128
+    model_filename: encoder_fine_500_resnet50.pt
+    batch_size: 96
     epochs: 6
     lr: 0.00012
     margin: 0.4
@@ -77,7 +66,7 @@ training:
       warmup_start_factor: 0.2
       min_lr: 2.0e-5
     augment:
-      camera_like: false
+      camera_like: true
       camera_like_strength: 1.0
       brightness: [0.90, 1.10]
       contrast: [0.90, 1.10]
@@ -105,7 +94,7 @@ hardware:
   use_cuda: true
 
 embedding_export_runtime:
-  model_path: ./models/encoder_fine_500.pt
+  model_path: ./models/encoder_fine_500_resnet50.pt
   use_augmentations: true
   num_augmentations: 4
   use_centroid: true
@@ -115,7 +104,7 @@ embedding_export_runtime:
   num_workers: 4
 
 embedding_export_analysis:
-  model_path: ./models/encoder_fine_500.pt
+  model_path: ./models/encoder_fine_500_resnet50.pt
   use_augmentations: true
   num_augmentations: 2
   use_centroid: false

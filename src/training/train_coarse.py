@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 import time
 import torch
+import torch.backends.cudnn as cudnn
 from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader
@@ -92,9 +93,12 @@ def main() -> None:
     coarse_filename = train_cfg.get("model_filename", "encoder_coarse.pt")
     batch_size = int(train_cfg.get("batch_size", 64))
     epochs = int(train_cfg.get("epochs", 1))
-    torch.backends.cudnn.benchmark = True  # erlaubt schnellere Conv-Kernel-Auswahl bei konstanten Input-Shapes
+    cudnn.benchmark = True  # erlaubt schnellere Conv-Kernel-Auswahl bei konstanten Input-Shapes
+    torch.set_float32_matmul_precision("medium")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_cuda = device.type == "cuda"
+    scaler = torch.cuda.amp.GradScaler(enabled=use_cuda)
     print(f"[INFO] Coarse-Training auf {device}")
     print(f"[TRAIN] Coarse-Training 20k: epochs={epochs}, batch_size={batch_size}")
 
@@ -144,16 +148,19 @@ def main() -> None:
         running_loss = 0.0
         running_acc = 0.0
         for full_batch, labels in tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}"):
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             full_batch = full_batch.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
 
-            embeddings, logits = model(full_batch, return_logits=True)
-            if logits is None:
-                raise RuntimeError("Classifier ist nicht konfiguriert (num_classes fehlt).")
-            total_loss = _compute_losses(logits, labels, ce_loss)
-            total_loss.backward()
-            optimizer.step()
+            with torch.cuda.amp.autocast(enabled=use_cuda):
+                embeddings, logits = model(full_batch, return_logits=True)
+                if logits is None:
+                    raise RuntimeError("Classifier ist nicht konfiguriert (num_classes fehlt).")
+                total_loss = _compute_losses(logits, labels, ce_loss)
+
+            scaler.scale(total_loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             running_loss += total_loss.item()
             preds = logits.argmax(dim=1) if logits is not None else torch.empty_like(labels)

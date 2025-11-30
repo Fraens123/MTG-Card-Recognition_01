@@ -9,7 +9,7 @@ import torchvision.models as models
 
 
 def build_backbone(encoder_cfg: Dict) -> Tuple[nn.Module, int]:
-    backbone_type = encoder_cfg.get("type", "resnet18").lower()
+    backbone_type = encoder_cfg.get("type", "resnet50").lower()
     if backbone_type == "resnet18":
         backbone = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
     elif backbone_type == "resnet50":

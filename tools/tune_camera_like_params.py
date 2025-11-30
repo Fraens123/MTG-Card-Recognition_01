@@ -416,7 +416,7 @@ def main() -> None:
     yaml_block = format_yaml_block(best_cfg)
     print(yaml_block)
     
-    print("\n[TIP] Kopiere den YAML-Block in deine config.train500.yaml unter training.fine.augment")
+    print(f"\n[TIP] Kopiere den YAML-Block in deine {args.config} unter training.fine.augment")
     print(f"[TIP] Mit {args.samples} Trials sollte Score >{study.best_value:.2f} erreichbar sein.")
 
 

@@ -20,13 +20,15 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.core.augmentations import CameraLikeAugmentor
 from src.core.config_utils import load_config
 from src.core.embedding_utils import build_card_embedding_batch, compute_centroid, l2_normalize
-from src.core.image_ops import crop_card_art, get_full_art_crop_cfg
+from src.core.image_ops import (
+    build_resize_normalize_transform,
+    crop_card_art,
+    get_full_art_crop_cfg,
+    resolve_resize_hw,
+)
 from src.core.model_builder import load_encoder
 from src.core.sqlite_store import SqliteEmbeddingStore
 from src.datasets.card_datasets import parse_scryfall_filename
-
-DEFAULT_MEAN = [0.485, 0.456, 0.406]
-DEFAULT_STD = [0.229, 0.224, 0.225]
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,16 +52,6 @@ def parse_args() -> argparse.Namespace:
         help="Optionaler Szenario-Name (falls nicht gesetzt: Wert aus config.database.scenario, sonst 'default')",
     )
     return parser.parse_args()
-
-
-def _build_eval_transform(size_hw) -> T.Compose:
-    return T.Compose(
-        [
-            T.Resize(size_hw, antialias=True),
-            T.ToTensor(),
-            T.Normalize(DEFAULT_MEAN, DEFAULT_STD),
-        ]
-    )
 
 
 def _prepare_tensors(
@@ -233,8 +225,8 @@ def main() -> None:
         raise FileNotFoundError(f"scryfall_dir nicht gefunden: {scryfall_dir}")
     print(f"[DATA] Quelle: {scryfall_dir}")
 
-    images_cfg = cfg.get("images", {})
-    full_transform = _build_eval_transform(tuple(reversed(images_cfg.get("full_card_size", [224, 320]))))
+    resize_hw = resolve_resize_hw(cfg, scryfall_dir)
+    full_transform = build_resize_normalize_transform(resize_hw)
     full_crop_cfg = get_full_art_crop_cfg(cfg)
 
     use_augmentations = bool(export_cfg.get("use_augmentations", False))
