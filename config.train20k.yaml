@@ -90,12 +90,13 @@ hardware:
 embedding_export_runtime:
   model_path: ./models/encoder_fine_20k_resnet50.pt
   use_augmentations: true     # wichtig!
-  num_augmentations: 2        # erstmal moderat lassen
+  num_augmentations: 10        # erstmal moderat lassen
   use_centroid: true          # nur 1 Vektor pro Karte in DB
   append_individual: false    # keine einzelnen Aug-Vektoren speichern
   append_centroid: false      # Zentroid wird trotzdem gespeichert (use_centroid)
-  export_batch_size: 32
-  num_workers: 2
+  export_batch_size: 256      # Deutlich größer für bessere GPU-Auslastung
+  num_workers: 12             # Mehr Workers für Datenvorbereitung
+  prefetch_factor: 4          # Prefetch mehr Batches
 camera_augmentor:
   # Starke, optimierte Kamera-Augmentierungen NUR für Analysis-Export
   enabled: true

@@ -152,7 +152,11 @@ def _process_batch(
     if device.type == "cuda":
         full_batch = full_batch.pin_memory()
     full_batch = full_batch.to(device, non_blocking=True)
-    emb_batch = build_card_embedding_batch(model, full_batch).cpu().numpy()
+    
+    # Verwende torch.no_grad() und inference_mode für schnellere Inferenz
+    with torch.inference_mode():
+        emb_batch = build_card_embedding_batch(model, full_batch).cpu().numpy()
+    
     return [(l2_normalize(vec), cid, path) for vec, cid, path in zip(emb_batch, batch_ids, batch_paths)]
 
 
@@ -214,6 +218,12 @@ def main() -> None:
     export_cfg, export_key = _select_export_cfg(cfg, args.mode)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # GPU-Optimierungen für bessere Auslastung
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True  # Aktiviert cudNN Auto-Tuner für bessere Performance
+        torch.cuda.empty_cache()
+    
     model_path = export_cfg.get("model_path") or os.path.join(cfg.get("paths", {}).get("models_dir", ""), "encoder_fine.pt")
     print(f"[INFO] Exportiere Embeddings auf {device}")
     print(f"[LOAD] Modell: {model_path}")
@@ -233,6 +243,7 @@ def main() -> None:
     num_augmentations = int(export_cfg.get("num_augmentations", 0))
     export_batch_size = int(export_cfg.get("export_batch_size", 64))
     num_workers = int(export_cfg.get("num_workers", 4))
+    prefetch_factor = int(export_cfg.get("prefetch_factor", 2))
     camera_aug_cfg = cfg.get("camera_augmentor", {})
     use_centroid = bool(export_cfg.get("use_centroid", False))
     append_individual = bool(export_cfg.get("append_individual", False))
@@ -311,24 +322,40 @@ def main() -> None:
                 )
                 num_embeddings += 1
 
-    print(f"[INFO] Nutze export_batch_size={export_batch_size} | num_workers={num_workers}")
-    with ThreadPoolExecutor(max_workers=max(1, num_workers)) as executor:
+    print(f"[INFO] Nutze export_batch_size={export_batch_size} | num_workers={num_workers} | prefetch_factor={prefetch_factor}")
+    # Erhöhe ThreadPoolExecutor workers für mehr parallele Bildverarbeitung
+    executor_workers = min(num_workers * 2, 24)  # Mehr Workers für Datenvorbereitung
+    with ThreadPoolExecutor(max_workers=executor_workers) as executor:
+        # Prefetch Strategie: Starte mehr Tasks voraus für kontinuierlichen Durchsatz
+        prefetch_size = executor_workers * prefetch_factor
         futures = []
-        for name, path in files:
-            futures.append(
-                executor.submit(
-                    _prepare_card_tensors,
-                    name,
-                    path,
-                    full_transform,
-                    full_crop_cfg,
-                    use_augmentations,
-                    num_augmentations,
-                    camera_aug_cfg,
+        file_iter = iter(files)
+        
+        # Initialer Prefetch
+        for _ in range(min(prefetch_size, len(files))):
+            try:
+                name, path = next(file_iter)
+                futures.append(
+                    executor.submit(
+                        _prepare_card_tensors,
+                        name,
+                        path,
+                        full_transform,
+                        full_crop_cfg,
+                        use_augmentations,
+                        num_augmentations,
+                        camera_aug_cfg,
+                    )
                 )
-            )
+            except StopIteration:
+                break
 
-        for future in tqdm(futures, desc="Vorbereiten", unit="card"):
+        pbar = tqdm(total=len(files), desc="Export", unit="card")
+        processed = 0
+        
+        while futures:
+            # Warte auf nächstes fertiges Future (non-blocking mit as_completed wäre besser, aber so geht's auch)
+            future = futures.pop(0)
             card_dict, tensors = future.result()
             cid = card_dict["card_uuid"]
             card_meta[cid] = card_dict
@@ -336,7 +363,29 @@ def main() -> None:
                 pending.append((t, cid, card_dict["image_path"]))
                 if len(pending) >= export_batch_size:
                     _flush_pending()
-
+            
+            processed += 1
+            pbar.update(1)
+            
+            # Fülle Prefetch-Buffer nach
+            try:
+                name, path = next(file_iter)
+                futures.append(
+                    executor.submit(
+                        _prepare_card_tensors,
+                        name,
+                        path,
+                        full_transform,
+                        full_crop_cfg,
+                        use_augmentations,
+                        num_augmentations,
+                        camera_aug_cfg,
+                    )
+                )
+            except StopIteration:
+                pass
+        
+        pbar.close()
         _flush_pending()
 
     card_order = [card_meta[cid]["card_uuid"] for cid in card_meta.keys()]
