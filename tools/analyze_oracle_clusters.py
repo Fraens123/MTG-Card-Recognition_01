@@ -22,6 +22,7 @@ from src.core.embedding_utils import l2_normalize
 from src.core.sqlite_embeddings import (
     ensure_oracle_quality_table,
     load_embeddings_grouped_by_oracle,
+    load_embeddings_grouped_by_print,
 )
 import sqlite3
 
@@ -43,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--print-top", type=int, default=20, help="Top-N verdächtige Einträge in der Konsole ausgeben (0=aus)")
     p.add_argument("--spread-max-thr", type=float, default=DEFAULT_SPREAD_MAX, help="Schwelle fuer intra_max_dist-Flag")
     p.add_argument("--overlap-thr", type=float, default=DEFAULT_OVERLAP, help="Schwelle fuer Nachbar-Overlap (Zentroid-Distanz)")
+    p.add_argument("--group-by", type=str, choices=["oracle", "print"], default="oracle", help="Gruppierung: 'oracle' (Default) oder 'print' (Scryfall-ID)")
     return p.parse_args()
 
 
@@ -222,7 +224,10 @@ def main():
         conn.execute("DELETE FROM oracle_quality WHERE scenario = ?", (scenario,))
     print("[INFO] oracle_quality geleert (kompletter Neuaufbau der Flags) fuer Szenario: " + str(scenario) + ".")
 
-    grouped, meta = load_embeddings_grouped_by_oracle(str(sqlite_path), args.mode, emb_dim, scenario=scenario)
+    if args.group_by == "print":
+        grouped, meta = load_embeddings_grouped_by_print(str(sqlite_path), args.mode, emb_dim, scenario=scenario)
+    else:
+        grouped, meta = load_embeddings_grouped_by_oracle(str(sqlite_path), args.mode, emb_dim, scenario=scenario)
     if not grouped:
         raise SystemExit("Keine Embeddings fuer den angegebenen mode und Szenario gefunden.")
 
@@ -263,6 +268,14 @@ def main():
         # meta_info JSON
         m = meta.get(oid, {})
         meta_info = {
+            "group_by": args.group_by,
+            "ids": {
+                "group_id": oid,
+                "oracle_id": m.get("oracle_id"),
+                "scryfall_id": m.get("scryfall_id"),
+                "oracle_ids_all": m.get("oracle_ids_all", []),
+                "scryfall_ids_all": m.get("scryfall_ids_all", []),
+            },
             "names_all": m.get("names_all", []),
             "mana_costs_all": m.get("mana_costs_all", []),
             "cmcs_all": m.get("cmcs_all", []),
@@ -462,6 +475,7 @@ def main():
         )
         payload = {
             "mode": args.mode,
+            "group_by": args.group_by,
             "thresholds": {
                 "spread_max_thr": spread_thr,
                 "overlap_thr": overlap_thr,
@@ -469,7 +483,7 @@ def main():
                 "global_intra_std": global_std,
             },
             "counts": {
-                "oracle_ids": len(rows),
+                "groups": len(rows),
                 "flags": {
                     "suspect_cluster_spread": int(sum(int(r["suspect_cluster_spread"]) for r in rows)),
                     "suspect_overlap": int(sum(int(r["suspect_overlap"]) for r in rows)),

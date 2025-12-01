@@ -64,6 +64,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fallback auf alten Random-Search statt Bayesian Optimization.",
     )
+    parser.add_argument(
+        "--spread-weight",
+        type=float,
+        default=0.3,
+        help="Gewicht fuer Spread-Strafterm D_aug im Optuna-Objective (Score = mean_cos - w * D_aug).",
+    )
+    parser.add_argument(
+        "--spread-augmentations",
+        type=int,
+        default=3,
+        help="Anzahl Augmentierungen pro Karte zur Schaetzung von D_aug.",
+    )
     return parser.parse_args()
 
 
@@ -268,18 +280,38 @@ def evaluate_params(
     transform,
     device: torch.device,
     art_crop_cfg: Optional[Dict],
+    spread_weight: float,
+    spread_augmentations: int,
 ) -> float:
     sims: List[float] = []
+    intra_dists: List[float] = []
     with torch.no_grad():
         for entry in pairs:
             pi_path = entry["pi"]
             base_img = scry_images[entry["scry"]]
-            aug_img = augmentor(base_img.copy())
-            aug_img = apply_table_background(aug_img, table_img=None, scale=1.0, offset_x=0, offset_y=0)
-            aug_img = crop_card_art(aug_img, art_crop_cfg)
-            scry_emb = compute_embedding(model, aug_img, transform, device)
-            sims.append(float(np.dot(scry_emb, pi_embeddings[pi_path])))
-    return float(np.mean(sims)) if sims else 0.0
+            pi_emb = pi_embeddings[pi_path]
+
+            aug_embs: List[np.ndarray] = []
+            for _ in range(max(1, spread_augmentations)):
+                aug_img = augmentor(base_img.copy())
+                aug_img = apply_table_background(aug_img, table_img=None, scale=1.0, offset_x=0, offset_y=0)
+                aug_img = crop_card_art(aug_img, art_crop_cfg)
+                scry_emb = compute_embedding(model, aug_img, transform, device)
+                aug_embs.append(scry_emb)
+                sims.append(float(np.dot(scry_emb, pi_emb)))
+
+            if len(aug_embs) >= 2:
+                arr = np.stack(aug_embs, axis=0)
+                centroid = arr.mean(axis=0)
+                centroid = l2_normalize(centroid)
+                dists = np.linalg.norm(arr - centroid[None, :], axis=1)
+                intra_dists.extend(dists.tolist())
+
+    mean_cos = float(np.mean(sims)) if sims else 0.0
+    D_aug = float(np.mean(intra_dists)) if intra_dists else 0.0
+    score = mean_cos - spread_weight * D_aug
+    print(f"[DEBUG] mean_cos={mean_cos:.4f}, D_aug={D_aug:.4f}, score={score:.4f}")
+    return score
 
 
 def format_yaml_block(best_aug: Dict) -> str:
@@ -364,6 +396,8 @@ def main() -> None:
             transform,
             device,
             art_crop_cfg,
+            args.spread_weight,
+            args.spread_augmentations,
         )
         
         # Log Zwischenstand

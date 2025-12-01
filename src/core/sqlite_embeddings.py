@@ -78,21 +78,21 @@ def _json_loads(value: str | None) -> Any:
         return None
 
 
-def load_embeddings_grouped_by_oracle(
+def load_embeddings_grouped(
     sqlite_path: str,
     mode: str,
     emb_dim: int,
     scenario: str = "default",
+    group_by: str = "oracle",
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Dict]]:
     """
-    Laedt alle Embeddings aus card_embeddings fuer den gegebenen mode und
-    gruppiert sie per oracle_id. Liefert:
-      - Dict[oracle_id, np.ndarray] mit Shape [N, emb_dim]
-      - Dict[oracle_id, Dict] mit Metadaten-Aggregaten (z.B. name, mana_cost, colors ...)
-    
-    WICHTIG: Diese Funktion ist speziell für Oracle-basierte Analysen (z.B. Cluster-Spread).
-    Für die normale Vektorsuche verwenden Sie load_embeddings_with_meta(), welches nach
-    scryfall_id gruppiert (siehe sqlite_store.py).
+    Generisches Laden der Embeddings aus card_embeddings und Gruppierung nach
+    - group_by == "oracle": wie bisher nach oracle_id (Fallback: scryfall_id)
+    - group_by == "print" : strikt nach scryfall_id (Leere IDs werden uebersprungen)
+
+    Rueckgabe:
+      - Dict[group_id, np.ndarray] mit Shape [N, emb_dim]
+      - Dict[group_id, Dict] mit Metadaten-Aggregaten inkl. group_id, oracle_id, scryfall_id
     """
     conn = sqlite3.connect(sqlite_path, timeout=30)
     conn.row_factory = sqlite3.Row
@@ -140,7 +140,8 @@ def load_embeddings_grouped_by_oracle(
     total = conn.execute(count_query, (mode, scenario)).fetchone()[0]
     
     from tqdm import tqdm
-    print(f"[INFO] Lade {total:,} Embeddings (oracle-gruppiert, mode={mode}, scenario={scenario})...")
+    grp_label = "oracle-gruppiert" if group_by == "oracle" else "print-gruppiert"
+    print(f"[INFO] Lade {total:,} Embeddings ({grp_label}, mode={mode}, scenario={scenario})...")
     
     if total == 0:
         conn.close()
@@ -159,24 +160,33 @@ def load_embeddings_grouped_by_oracle(
                     break
                     
                 for row in rows:
-                    oracle_id = row["oracle_id"] or row["scryfall_id"]
-                    if not oracle_id:
-                        # falls nichts verknuepft ist, ueberspringen
+                    # Bestimme Gruppierungs-Schluessel
+                    row_sfid = row["scryfall_id"]
+                    row_oid = row["oracle_id"]
+                    if group_by == "print":
+                        key = row_sfid
+                    else:
+                        key = row_oid or row_sfid
+                    if not key:
+                        # keine gueltige ID -> ueberspringen
                         pbar.update(1)
                         continue
+
                     vec = np.frombuffer(row["emb"], dtype=np.float32)
                     if vec.size != emb_dim:
-                        raise ValueError(f"Falsche Embedding-Dimension fuer {oracle_id}: {vec.size} != {emb_dim}")
-                    groups.setdefault(oracle_id, []).append(vec)
+                        raise ValueError(f"Falsche Embedding-Dimension fuer {key}: {vec.size} != {emb_dim}")
+                    groups.setdefault(key, []).append(vec)
 
-                    # Metadaten-Aggregation: sammle Werte als Sets, um Konflikte zu erkennen
+                    # Metadaten-Aggregation: sammle Werte als Sets, inkl. beider IDs
                     m = meta.setdefault(
-                        oracle_id,
+                        key,
                         {
+                            "oracle_ids": set(),
+                            "scryfall_ids": set(),
                             "names": set(),
                             "mana_costs": set(),
                             "cmcs": set(),
-                            "colors": set(),  # als JSON-Strings, spaeter wieder zu Liste wandelbar
+                            "colors": set(),
                             "color_identities": set(),
                             "set_codes": set(),
                             "set_names": set(),
@@ -184,6 +194,10 @@ def load_embeddings_grouped_by_oracle(
                             "image_paths": set(),
                         },
                     )
+                    if row_oid:
+                        m["oracle_ids"].add(str(row_oid))
+                    if row_sfid:
+                        m["scryfall_ids"].add(str(row_sfid))
                     if row["name"]:
                         m["names"].add(str(row["name"]))
                     if row["mana_cost"] is not None:
@@ -225,11 +239,11 @@ def load_embeddings_grouped_by_oracle(
     # in Arrays wandeln und Metadaten vereinheitlichen
     arrays: Dict[str, np.ndarray] = {}
     meta_out: Dict[str, Dict] = {}
-    for oid, vecs in groups.items():
+    for gid, vecs in groups.items():
         if not vecs:
             continue
-        arrays[oid] = np.stack(vecs, axis=0)
-        m = meta.get(oid, {})
+        arrays[gid] = np.stack(vecs, axis=0)
+        m = meta.get(gid, {})
         # Ableiten eines repr. Eintrags
         name = next(iter(m.get("names", [])), None)
         mana_cost = next(iter(m.get("mana_costs", [])), None)
@@ -241,8 +255,14 @@ def load_embeddings_grouped_by_oracle(
         image_path = next(iter(m.get("image_paths", [])), None)
         colors = json.loads(colors_json) if colors_json else []
         color_identity = json.loads(color_identity_json) if color_identity_json else []
-        meta_out[oid] = {
-            "oracle_id": oid,
+        # Repr. IDs
+        rep_oid = next(iter(m.get("oracle_ids", [])), None)
+        rep_sfid = next(iter(m.get("scryfall_ids", [])), None)
+        meta_out[gid] = {
+            "group_id": gid,
+            "group_by": group_by,
+            "oracle_id": rep_oid,
+            "scryfall_id": rep_sfid,
             "scenario": scenario,
             "name": name,
             "mana_cost": mana_cost,
@@ -252,6 +272,8 @@ def load_embeddings_grouped_by_oracle(
             "image_path": image_path,
             "colors": colors,
             "color_identity": color_identity,
+            "oracle_ids_all": sorted(list(m.get("oracle_ids", []))),
+            "scryfall_ids_all": sorted(list(m.get("scryfall_ids", []))),
             "names_all": sorted(list(m.get("names", []))),
             "mana_costs_all": sorted(list(m.get("mana_costs", []))),
             "cmcs_all": sorted(list(m.get("cmcs", []))),
@@ -264,3 +286,27 @@ def load_embeddings_grouped_by_oracle(
         }
 
     return arrays, meta_out
+
+
+def load_embeddings_grouped_by_oracle(
+    sqlite_path: str,
+    mode: str,
+    emb_dim: int,
+    scenario: str = "default",
+) -> Tuple[Dict[str, np.ndarray], Dict[str, Dict]]:
+    """
+    Backwards-kompatibler Wrapper: gruppiert per Oracle-ID.
+    """
+    return load_embeddings_grouped(sqlite_path, mode, emb_dim, scenario=scenario, group_by="oracle")
+
+
+def load_embeddings_grouped_by_print(
+    sqlite_path: str,
+    mode: str,
+    emb_dim: int,
+    scenario: str = "default",
+) -> Tuple[Dict[str, np.ndarray], Dict[str, Dict]]:
+    """
+    Convenience-Wrapper: gruppiert strikt per Scryfall-ID (Print).
+    """
+    return load_embeddings_grouped(sqlite_path, mode, emb_dim, scenario=scenario, group_by="print")

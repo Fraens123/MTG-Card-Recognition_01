@@ -66,16 +66,16 @@ training:
     augment:
       camera_like: true
       camera_like_strength: 1.0
-      brightness: [0.90, 1.10]
-      contrast: [0.90, 1.10]
-      saturation: [0.95, 1.05]
-      color_temperature_range: [0.95, 1.05]
-      gamma_range: [0.95, 1.05]
-      rotation_deg: 1.0
-      perspective: 0.0
-      shadow: 0.0
-      noise_std: 0.01
-      blur_prob: 0.05
+      brightness: [0.85, 1.25]
+      contrast: [0.86, 1.06]
+      saturation: [0.72, 1.30]
+      color_temperature_range: [0.72, 1.05]
+      gamma_range: [0.87, 0.95]
+      rotation_deg: 2.4
+      perspective: 0.005
+      shadow: 0.37
+      noise_std: 0.005
+      blur_prob: 0.23
 
 database:
   sqlite_path: tcg_database/database/karten.db
@@ -98,24 +98,24 @@ embedding_export_runtime:
   num_workers: 12             # Mehr Workers für Datenvorbereitung
   prefetch_factor: 4          # Prefetch mehr Batches
 camera_augmentor:
-  # Starke, optimierte Kamera-Augmentierungen NUR für Analysis-Export
   enabled: true
   camera_like: true
   camera_like_strength: 1.0
-  brightness: [0.8226, 1.1478]
-  contrast: [0.9700, 1.3280]
-  saturation: [0.6441, 1.1688]
-  color_temperature_range: [0.8657, 1.0696]
-  gamma_range: [0.8852, 1.0745]
-  rotation_deg: 4.0181
-  perspective: 0.0879
-  shadow: 0.2199
-  blur_prob: 0.3116
-  noise_std: 0.0277
+  brightness: [0.85, 1.25]
+  contrast: [0.86, 1.06]
+  saturation: [0.72, 1.30]
+  color_temperature_range: [0.72, 1.05]
+  gamma_range: [0.87, 0.95]
+  rotation_deg: 2.4
+  perspective: 0.005
+  shadow: 0.37
+  noise_std: 0.005
+  blur_prob: 0.23
+
 embedding_export_analysis:
   model_path: ./models/encoder_fine_20k_resnet50.pt
   use_augmentations: true
-  num_augmentations: 2
+  num_augmentations: 10
   use_centroid: false
   append_individual: true
   append_centroid: true

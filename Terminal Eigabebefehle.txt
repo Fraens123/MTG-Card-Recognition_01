@@ -21,6 +21,7 @@ Runtime-Export (1 Zentroid pro Karte):
 python -m src.training.export_embeddings --config config.yaml --mode runtime
 python -m src.training.export_embeddings --config config.train5k.yaml --mode runtime
 python -m src.training.export_embeddings --config config.train20k.yaml --mode runtime
+python -m src.training.export_embeddings --config config.train20k.yaml --mode analysis
 
 Analyse-Export (alle Augs + Zentroid):
 python -m src.training.export_embeddings --config config.yaml --mode analysis
@@ -77,6 +78,10 @@ Analyze Oracle Cluster (setzt die Flags bei Überschneidungen, Zerstreute Cluste
 python tools\analyze_oracle_clusters.py --config config.train5k.yaml --mode analysis
 python tools\analyze_oracle_clusters.py --config config.train500.yaml --mode analysis
 python tools\analyze_oracle_clusters.py --config config.train20k.yaml --mode runtime
+python tools\analyze_oracle_clusters.py --config config.train20k.yaml --mode analysis
+
+python tools/analyze_oracle_clusters.py --config config.train20k.yaml --mode analysis --group-by print
+
 
 ----------------------------------------------------------------------------------------
 
@@ -95,3 +100,17 @@ Viz Cluster:
 Consistency Tool (vergleicht Training und Runtime Bilder)
 python tools/debug_embedding_consistency.py --config config.train20k.yaml --image "C:\Users\Fraens\Documents\Fraens\Youtube\TCG Sorter\CNN-Test\CardScannerCNN_02\data\scryfall_images\subsets\train_20k_en_de\2X2_42_en_2dc59566-10cb-468a-b6a2-17d6c0186e6d.jpg" --model models/encoder_fine_20k_final.pt
 
+----------------------------------------------------------------------------------------
+
+Pi Cam Bilder Analyse: 
+python tools/tune_camera_like_params.py --config config.train20k.yaml --pairs-file data/Bildanalyse/pairs.json
+
+----------------------------------------------------------------------------------------
+
+Optuna mit Spread-Penalty:
+python -m tools.tune_camera_like_params `
+  --config config.train20k.yaml `
+  --pairs-file data/Bildanalyse/pairs_20k.json `
+  --samples 40 `
+  --spread-weight 0.3 `
+  --spread-augmentations 3

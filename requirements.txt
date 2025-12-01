@@ -33,3 +33,6 @@ pytest>=7.4.0
 
 # Large JSON streaming
 ijson>=3.3
+
+# Optimization (Bayesian/TPE)
+optuna>=3.6.0
